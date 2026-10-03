@@ -25,20 +25,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // Role Routing
                 switch ($user['role']) {
                     case 'admin':
-                        header("Location: admin_dashboard.php");
+                        $target = "admin_dashboard.php";
                         break;
                     case 'fleet_manager':
-                        header("Location: fleet_dashboard.php");
+                        $target = "fleet_dashboard.php";
                         break;
                     case 'branch_agent':
-                        header("Location: agent_dashboard.php");
+                        $target = "agent_dashboard.php";
                         break;
                     case 'customer':
                     default:
-                        header("Location: user_dashboard.php");
+                        $target = "user_dashboard.php";
                         break;
                 }
-                exit(); // Ensure no further execution
+
+                // Header Redirect with JS Fallback
+                header("Location: " . $target);
+                echo "<script>window.location.href='" . $target . "';</script>";
+                echo "<noscript><meta http-equiv='refresh' content='0;url=" . $target . "'></noscript>";
+                exit();
             } else {
                 $error = "Invalid email or password.";
             }
@@ -85,7 +90,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         <div class="form-group">
             <label for="password">Password</label>
-            <input type="password" id="password" name="password" required placeholder="Password123!">
+            <input type="password" id="password" name="password" required placeholder="Password123">
         </div>
 
         <button type="submit" class="btn">Sign In</button>
