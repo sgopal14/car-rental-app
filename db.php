@@ -8,7 +8,7 @@ PHP
 $host = 'arn:aws:rds:ap-southeast-1:329036566092:db:driveease-db-driveease-stack';
 $dbname = 'car_rental';
 $username = 'dbadmin'; // Update with your DB username
-$password = '';     // Update with your DB password
+$password = 'CUsecure2026';     // Update with your DB password
 
 try {
     $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password, [
