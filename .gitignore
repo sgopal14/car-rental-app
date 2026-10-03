@@ -1,0 +1,10 @@
+# Ignore Composer vendor directory
+/vendor/
+
+# Ignore local environment / secret configuration files if separated
+.env
+
+# Ignore temporary uploads or OS files
+.DS_Store
+Thumbs.db
+*.log
