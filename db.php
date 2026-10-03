@@ -5,7 +5,7 @@ PHP
 //$username = 'root'; // Update with your DB username
 //$password = '';     // Update with your DB password
 
-$host = 'arn:aws:rds:ap-southeast-1:329036566092:db:driveease-db-driveease-stack';
+$host = 'driveease-db-driveease-stack.c50gqqyuw2dp.ap-southeast-1.rds.amazonaws.com';
 $dbname = 'car_rental';
 $username = 'dbadmin'; // Update with your DB username
 $password = 'CUsecure2026';     // Update with your DB password
