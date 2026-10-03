@@ -8,19 +8,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $email = trim($_POST['email'] ?? '');
     $password = $_POST['password'] ?? '';
 
-    if (!empty($email) && !empty($password)) {
-        try {
-            $stmt = $pdo->prepare("SELECT id, name, email, password, role FROM users WHERE LOWER(email) = LOWER(?)");
-            $stmt->execute([$email]);
-            $user = $stmt->fetch();
+    $stmt = $pdo->prepare("SELECT id, name, email, password, role FROM users WHERE LOWER(email) = LOWER(?)");
+    $stmt->execute([$email]);
+    $user = $stmt->fetch();
 
-            if ($user && password_verify($password, $user['password'])) {
-                session_regenerate_id(true);
+    if (!$user) {
+        die("<h2 style='color:red;'>[DEBUG ERROR 1] User email not found in database: " . htmlspecialchars($email) . "</h2>");
+    }
 
-                $_SESSION['user_id'] = $user['id'];
-                $_SESSION['user_name'] = $user['name'];
-                $_SESSION['user_email'] = $user['email'];
-                $_SESSION['role'] = $user['role'];
+    if (!password_verify($password, $user['password'])) {
+        die("<h2 style='color:red;'>[DEBUG ERROR 2] Password mismatch for " . htmlspecialchars($email) . ". Submitted pass: " . htmlspecialchars($password) . "</h2>");
+    }
+
+    $_SESSION['user_id'] = $user['id'];
+    $_SESSION['user_name'] = $user['name'];
+    $_SESSION['role'] = $user['role'];
+
+    echo "<h2 style='color:green;'>[DEBUG SUCCESS] Login verified! User Role: " . htmlspecialchars($user['role']) . ". Redirecting...</h2>";
+    echo "<script>setTimeout(function(){ window.location.href='user_dashboard.php'; }, 2000);</script>";
+    exit();
 
                 // Role Routing
                 switch ($user['role']) {
