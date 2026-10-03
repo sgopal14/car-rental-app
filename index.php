@@ -28,6 +28,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     echo "<script>setTimeout(function(){ window.location.href='user_dashboard.php'; }, 2000);</script>";
     exit();
 
+}
+?>
+
                 // Role Routing
                 switch ($user['role']) {
                     case 'admin':
