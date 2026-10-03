@@ -1,8 +1,13 @@
 PHP
 <?php
-$host = 'localhost';
+//$host = 'localhost';
+//$dbname = 'car_rental';
+//$username = 'root'; // Update with your DB username
+//$password = '';     // Update with your DB password
+
+$host = 'arn:aws:rds:ap-southeast-1:329036566092:db:driveease-db-driveease-stack';
 $dbname = 'car_rental';
-$username = 'root'; // Update with your DB username
+$username = 'dbadmin'; // Update with your DB username
 $password = '';     // Update with your DB password
 
 try {
