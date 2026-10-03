@@ -25,19 +25,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // Role Routing
                 switch ($user['role']) {
                     case 'admin':
-                        header("Location: admin_dashboard.php");
+                        $target = "admin_dashboard.php";
                         break;
                     case 'fleet_manager':
-                        header("Location: fleet_dashboard.php");
+                        $target = "fleet_dashboard.php";
                         break;
                     case 'branch_agent':
-                        header("Location: agent_dashboard.php");
+                        $target = "fleet_dashboard.php";;
                         break;
                     case 'customer':
                     default:
-                        header("Location: user_dashboard.php");
+                        $target = "user_dashboard.php";
                         break;
                 }
+                // 1. Try PHP header redirect
+                header("Location: " . $target);
+
+                // 2. JavaScript & Meta fallback if headers were blocked
+                echo "<script>window.location.href='" . $target . "';</script>";
+                echo "<noscript><meta http-equiv='refresh' content='0;url=" . $target . "'></noscript>";
+                //exit();
                 exit(); // Ensure no further execution
             } else {
                 $error = "Invalid email or password.";
