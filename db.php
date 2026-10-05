@@ -18,7 +18,7 @@ if (session_status() === PHP_SESSION_NONE) {
 $host = 'driveease-db-driveease-stack.c50gqqyuw2dp.ap-southeast-1.rds.amazonaws.com'; // Replace with your actual RDS Endpoint
 $db   = 'car_rental';
 $user = 'dbadmin';
-$pass = 'CUSecure2026'; // Replace with your actual RDS Password
+$pass = 'CUsecure2026'; // Replace with your actual RDS Password
 $charset = 'utf8mb4';
 
 $dsn = "mysql:host=$host;dbname=$db;charset=$charset";
