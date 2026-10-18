@@ -36,16 +36,10 @@ if (!$car_id || empty($start_date) || empty($end_date)) {
 }
 
 try {
-    // 3. Retrieve vehicle details using SELECT *
+    // 3. Retrieve vehicle details using SELECT * from cars
     $stmt = $pdo->prepare("SELECT * FROM cars WHERE id = :id");
     $stmt->execute([':id' => $car_id]);
     $car = $stmt->fetch(PDO::FETCH_ASSOC);
-
-    if (!$car) {
-        $stmt = $pdo->prepare("SELECT * FROM vehicles WHERE id = :id");
-        $stmt->execute([':id' => $car_id]);
-        $car = $stmt->fetch(PDO::FETCH_ASSOC);
-    }
 
     if (!$car) {
         die("Selected vehicle not found. <a href='user_dashboard.php'>Return to Catalog</a>");

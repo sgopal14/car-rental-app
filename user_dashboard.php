@@ -25,26 +25,19 @@ $my_rentals = [];
 $error_msg = '';
 
 try {
-    // 1. Fetch available fleet
+    // 1. Fetch available fleet safely from cars table
     $stmt = $pdo->prepare("SELECT * FROM cars");
     $stmt->execute();
     $cars = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    if (empty($cars)) {
-        $stmt = $pdo->prepare("SELECT * FROM vehicles");
-        $stmt->execute();
-        $cars = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    }
-
     // 2. Fetch active rentals for the logged-in user
     $rental_query = "
         SELECT r.*, 
-               COALESCE(c.make, v.make, c.brand, 'Vehicle') AS make, 
-               COALESCE(c.model, v.model, '') AS model,
-               COALESCE(c.category, v.category, 'Standard') AS category
+               COALESCE(c.make, c.brand, 'Vehicle') AS make, 
+               COALESCE(c.model, '') AS model,
+               COALESCE(c.category, 'Standard') AS category
         FROM rentals r
         LEFT JOIN cars c ON r.car_id = c.id
-        LEFT JOIN vehicles v ON r.car_id = v.id
         WHERE r.user_id = :user_id
         ORDER BY r.created_at DESC
     ";
@@ -170,6 +163,8 @@ try {
                     </div>
                 </div>
             <?php endforeach; ?>
+        <?php else: ?>
+            <p style="text-align: center; grid-column: 1 / -1; color: #6c757d;">No vehicles currently available in the catalog.</p>
         <?php endif; ?>
     </div>
 </div>
