@@ -165,24 +165,27 @@ try {
         $price = $car['daily_rate'] ?? $car['price_per_day'] ?? $car['price'] ?? '0.00';
         
         // 1. Inspect all potential DB image column keys
-        $db_image = trim($car['image_url'] ?? $car['image'] ?? $car['photo'] ?? $car['car_image'] ?? '');
+        //$db_image = trim($car['image_url'] ?? $car['image'] ?? $car['photo'] ?? $car['car_image'] ?? '');
+
 
         // 2. Fall back to default only if DB column is completely empty
-        if (empty($db_image)) {
+        $image_file = $car['car_image'] ?? $car['image_url'] ?? $car['image'] ?? '';
+        
+        if (empty($image_file)) {
             $image_src = '/uploads/default_car.jpg';
         } else {
-            // Prepend uploads/ if the DB string only stored "rav4.jpg"
-            if (strpos($db_image, 'uploads/') === false) {
-                $db_image = 'uploads/' . ltrim($db_image, '/');
+            // Ensure uploads/ path is present
+            if (strpos($image_file, 'uploads/') === false) {
+                $image_file = 'uploads/' . ltrim($image_file, '/');
             }
-            $image_src = '/' . ltrim($db_image, '/');
+            $image_src = '/' . ltrim($image_file, '/');
         }
     ?>
     <div class="card">
         <img src="<?php echo htmlspecialchars($image_src); ?>" 
-             alt="<?php echo htmlspecialchars($make . ' ' . $model); ?>" 
-             class="card-img"
-             onerror="this.onerror=null; this.src='/uploads/default_car.jpg';">
+             alt="Vehicle Image" 
+             class="card-img">    
+             //onerror="this.onerror=null; this.src='/uploads/default_car.jpg';">
         
         <div class="card-body">
             <div class="card-title"><?php echo htmlspecialchars($make . ' ' . $model); ?></div>
