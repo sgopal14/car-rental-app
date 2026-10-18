@@ -28,6 +28,7 @@ try {
     $stmt = $pdo->prepare("SELECT * FROM cars");
     $stmt->execute();
     $cars = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    echo "<pre>"; print_r($cars[0] ?? 'No cars found'); echo "</pre>"; die();
 } catch (PDOException $e) {
     try {
         $stmt = $pdo->prepare("SELECT * FROM vehicles");
