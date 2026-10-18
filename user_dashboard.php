@@ -2,8 +2,8 @@
 session_start();
 require_once 'db.php';
 
-// Enforce CSRF token validation for non-GET requests
-if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+// Safe CSRF verification check (prevents crashing if function is missing)
+if ($_SERVER['REQUEST_METHOD'] !== 'GET' && function_exists('verify_csrf_token')) {
     verify_csrf_token();
 }
 
@@ -14,26 +14,27 @@ if (!isset($_SESSION['user_id'])) {
 }
 
 // Enforce customer role access control
-if (isset($_SESSION['role']) &&$_SESSION['role'] !== 'customer') {
+if (isset($_SESSION['role']) && $_SESSION['role'] !== 'customer') {
     header("Location: index.php");
     exit();
 }
 
-$user_name =$_SESSION['user_name'] ?? 'Valued Customer';
-$cars = [];$error_msg = '';
+$user_name = $_SESSION['user_name'] ?? 'Valued Customer';
+$cars = [];
+$error_msg = '';
 
 // Retrieve fleet data safely from RDS database
 try {
-    $stmt =$pdo->prepare("SELECT * FROM cars");
+    $stmt = $pdo->prepare("SELECT * FROM cars");
     $stmt->execute();
-    $cars =$stmt->fetchAll(PDO::FETCH_ASSOC);
+    $cars = $stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
-    // If table 'cars' fails, attempt fallback to 'vehicles'
     try {
-        $stmt =$pdo->prepare("SELECT * FROM vehicles");
+        $stmt = $pdo->prepare("SELECT * FROM vehicles");
         $stmt->execute();
-        $cars =$stmt->fetchAll(PDO::FETCH_ASSOC);
-    } catch (PDOException $e2) {$error_msg = "Unable to retrieve vehicle fleet data: " . htmlspecialchars($e2->getMessage());
+        $cars = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (PDOException $e2) {
+        $error_msg = "Database Error: " . htmlspecialchars($e2->getMessage());
     }
 }
 ?>
@@ -121,4 +122,76 @@ try {
             font-size: 16px; 
             font-weight: bold; 
             color: #28a745; 
-            margin-bottom
+            margin-bottom: 15px; 
+        }
+        .btn-rent { 
+            display: block; 
+            width: 100%; 
+            padding: 10px; 
+            text-align: center; 
+            background-color: #007bff; 
+            color: white; 
+            text-decoration: none; 
+            border-radius: 5px; 
+            font-weight: bold; 
+        }
+        .btn-rent:hover { background-color: #0056b3; }
+    </style>
+</head>
+<body>
+
+<nav class="navbar">
+    <h1>DriveEase Portal</h1>
+    <div class="user-info">
+        <span>Welcome, <strong><?php echo htmlspecialchars($user_name); ?></strong></span>
+        <a href="logout.php" class="logout-btn">Sign Out</a>
+    </div>
+</nav>
+
+<div class="container">
+    <h2 class="header-title">Available Vehicle Fleet</h2>
+
+    <?php if (!empty($error_msg)): ?>
+        <div class="alert"><?php echo htmlspecialchars($error_msg); ?></div>
+    <?php endif; ?>
+
+    <div class="catalog-grid">
+        <?php if (!empty($cars)): ?>
+            <?php foreach ($cars as $car): ?>
+                <?php 
+                    $make = $car['make'] ?? $car['car_make'] ?? $car['brand'] ?? 'Vehicle';
+                    $model = $car['model'] ?? $car['car_model'] ?? '';
+                    $price = $car['daily_rate'] ?? $car['price_per_day'] ?? $car['price'] ?? '0.00';
+                    $image_path = $car['image_url'] ?? $car['image'] ?? $car['photo'] ?? $car['car_image'] ?? 'uploads/default_car.jpg';
+                    $image_src = '/' . ltrim($image_path, '/');
+                ?>
+                <div class="card">
+                    <img src="<?php echo htmlspecialchars($image_src); ?>" 
+                         alt="<?php echo htmlspecialchars($make . ' ' . $model); ?>" 
+                         class="card-img"
+                         onerror="this.onerror=null; this.src='/uploads/default_car.jpg';">
+                    
+                    <div class="card-body">
+                        <div class="card-title"><?php echo htmlspecialchars($make . ' ' . $model); ?></div>
+                        
+                        <div class="card-details">
+                            Category: <?php echo htmlspecialchars($car['category'] ?? $car['type'] ?? 'Standard'); ?><br>
+                            Transmission: <?php echo htmlspecialchars($car['transmission'] ?? 'Automatic'); ?>
+                        </div>
+
+                        <div class="card-price">
+                            $<?php echo htmlspecialchars(number_format((float)$price, 2)); ?> / day
+                        </div>
+
+                        <a href="rent.php?id=<?php echo htmlspecialchars($car['id']); ?>" class="btn-rent">Reserve Vehicle</a>
+                    </div>
+                </div>
+            <?php endforeach; ?>
+        <?php else: ?>
+            <p style="text-align: center; grid-column: 1 / -1; color: #6c757d;">No vehicles currently available in the catalog.</p>
+        <?php endif; ?>
+    </div>
+</div>
+
+</body>
+</html>
