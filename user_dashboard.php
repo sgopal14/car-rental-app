@@ -7,35 +7,54 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET' && function_exists('verify_csrf_token')
     verify_csrf_token();
 }
 
-// Check if user is authenticated
+// Authenticate user
 if (!isset($_SESSION['user_id'])) {
     header("Location: index.php");
     exit();
 }
 
-// Enforce customer role access control
 if (isset($_SESSION['role']) && $_SESSION['role'] !== 'customer') {
     header("Location: index.php");
     exit();
 }
 
+$user_id = $_SESSION['user_id'];
 $user_name = $_SESSION['user_name'] ?? 'Valued Customer';
 $cars = [];
+$my_rentals = [];
 $error_msg = '';
 
-// Retrieve fleet data safely from RDS database
 try {
+    // 1. Fetch available fleet
     $stmt = $pdo->prepare("SELECT * FROM cars");
     $stmt->execute();
     $cars = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (PDOException $e) {
-    try {
+
+    if (empty($cars)) {
         $stmt = $pdo->prepare("SELECT * FROM vehicles");
         $stmt->execute();
         $cars = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    } catch (PDOException $e2) {
-        $error_msg = "Database Error: " . htmlspecialchars($e2->getMessage());
     }
+
+    // 2. Fetch active rentals for the logged-in user
+    $rental_query = "
+        SELECT r.*, 
+               COALESCE(c.make, v.make, c.brand, 'Vehicle') AS make, 
+               COALESCE(c.model, v.model, '') AS model,
+               COALESCE(c.category, v.category, 'Standard') AS category
+        FROM rentals r
+        LEFT JOIN cars c ON r.car_id = c.id
+        LEFT JOIN vehicles v ON r.car_id = v.id
+        WHERE r.user_id = :user_id
+        ORDER BY r.created_at DESC
+    ";
+    
+    $r_stmt = $pdo->prepare($rental_query);
+    $r_stmt->execute([':user_id' => $user_id]);
+    $my_rentals = $r_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+} catch (PDOException $e) {
+    $error_msg = "Database Error: " . htmlspecialchars($e->getMessage());
 }
 ?>
 <!DOCTYPE html>
@@ -46,90 +65,29 @@ try {
     <title>DriveEase - Vehicle Catalog</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-            background-color: #f4f6f9; 
-            color: #333; 
-        }
-        .navbar { 
-            background-color: #1a252f; 
-            color: #fff; 
-            padding: 15px 30px; 
-            display: flex; 
-            justify-content: space-between; 
-            align-items: center; 
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1); 
-        }
-        .navbar h1 { font-size: 22px; font-weight: bold; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; color: #333; }
+        .navbar { background-color: #1a252f; color: #fff; padding: 15px 30px; display: flex; justify-content: space-between; align-items: center; }
         .navbar .user-info { display: flex; align-items: center; gap: 15px; }
-        .logout-btn { 
-            background-color: #dc3545; 
-            color: white; 
-            padding: 8px 16px; 
-            text-decoration: none; 
-            border-radius: 5px; 
-            font-size: 14px; 
-            font-weight: bold; 
-        }
-        .logout-btn:hover { background-color: #bd2130; }
+        .logout-btn { background-color: #dc3545; color: white; padding: 8px 16px; text-decoration: none; border-radius: 5px; font-size: 14px; font-weight: bold; }
         .container { max-width: 1200px; margin: 30px auto; padding: 0 20px; }
-        .header-title { margin-bottom: 25px; color: #1a252f; text-align: center; }
-        .alert { 
-            background-color: #f8d7da; 
-            color: #721c24; 
-            padding: 15px; 
-            border-radius: 5px; 
-            margin-bottom: 20px; 
-            text-align: center; 
-        }
-        .catalog-grid { 
-            display: grid; 
-            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); 
-            gap: 25px; 
-        }
-        .card { 
-            background: #fff; 
-            border-radius: 10px; 
-            overflow: hidden; 
-            border-top: 4px solid #007bff;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.08); 
-            transition: transform 0.2s ease, box-shadow 0.2s ease; 
-        }
-        .card:hover { 
-            transform: translateY(-5px); 
-            box-shadow: 0 6px 15px rgba(0,0,0,0.12); 
-        }
+        .header-title { margin: 30px 0 15px 0; color: #1a252f; }
+        .alert-success { background-color: #d4edda; color: #155724; padding: 15px; border-radius: 5px; margin-bottom: 25px; border: 1px solid #c3e6cb; font-weight: bold; }
+        .alert-error { background-color: #f8d7da; color: #721c24; padding: 15px; border-radius: 5px; margin-bottom: 25px; }
+        
+        /* Rentals Table Styles */
+        .rentals-table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 10px rgba(0,0,0,0.05); margin-bottom: 40px; }
+        .rentals-table th, .rentals-table td { padding: 14px 18px; text-align: left; border-bottom: 1px solid #eee; }
+        .rentals-table th { background-color: #1a252f; color: white; font-weight: 600; }
+        .status-badge { background-color: #28a745; color: white; padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: bold; text-transform: uppercase; }
+
+        /* Catalog Grid Styles */
+        .catalog-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 25px; }
+        .card { background: #fff; border-radius: 10px; overflow: hidden; border-top: 4px solid #007bff; box-shadow: 0 4px 10px rgba(0,0,0,0.08); }
         .card-body { padding: 25px; }
-        .card-title { 
-            font-size: 20px; 
-            font-weight: bold; 
-            color: #1a252f; 
-            margin-bottom: 12px; 
-        }
-        .card-details { 
-            font-size: 14px; 
-            color: #6c757d; 
-            margin-bottom: 20px; 
-            line-height: 1.6; 
-        }
-        .card-price { 
-            font-size: 18px; 
-            font-weight: bold; 
-            color: #28a745; 
-            margin-bottom: 20px; 
-        }
-        .btn-rent { 
-            display: block; 
-            width: 100%; 
-            padding: 12px; 
-            text-align: center; 
-            background-color: #007bff; 
-            color: white; 
-            text-decoration: none; 
-            border-radius: 5px; 
-            font-weight: bold; 
-        }
-        .btn-rent:hover { background-color: #0056b3; }
+        .card-title { font-size: 20px; font-weight: bold; color: #1a252f; margin-bottom: 12px; }
+        .card-details { font-size: 14px; color: #6c757d; margin-bottom: 20px; line-height: 1.6; }
+        .card-price { font-size: 18px; font-weight: bold; color: #28a745; margin-bottom: 20px; }
+        .btn-rent { display: block; width: 100%; padding: 12px; text-align: center; background-color: #007bff; color: white; text-decoration: none; border-radius: 5px; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -143,12 +101,50 @@ try {
 </nav>
 
 <div class="container">
-    <h2 class="header-title">Available Vehicle Fleet</h2>
 
-    <?php if (!empty($error_msg)): ?>
-        <div class="alert"><?php echo htmlspecialchars($error_msg); ?></div>
+    <?php if (isset($_GET['booking']) && $_GET['booking'] === 'success'): ?>
+        <div class="alert-success">✓ Your vehicle reservation has been successfully confirmed!</div>
     <?php endif; ?>
 
+    <?php if (!empty($error_msg)): ?>
+        <div class="alert-error"><?php echo htmlspecialchars($error_msg); ?></div>
+    <?php endif; ?>
+
+    <!-- Section: My Reserved Vehicles -->
+    <h2 class="header-title">My Rented Vehicles</h2>
+    <?php if (!empty($my_rentals)): ?>
+        <table class="rentals-table">
+            <thead>
+                <tr>
+                    <th>Vehicle</th>
+                    <th>Category</th>
+                    <th>Start Date</th>
+                    <th>End Date</th>
+                    <th>Total Price</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach ($my_rentals as $rental): ?>
+                    <tr>
+                        <td><strong><?php echo htmlspecialchars(($rental['make'] ?? 'Vehicle') . ' ' . ($rental['model'] ?? '')); ?></strong></td>
+                        <td><?php echo htmlspecialchars($rental['category'] ?? 'Standard'); ?></td>
+                        <td><?php echo htmlspecialchars($rental['start_date']); ?></td>
+                        <td><?php echo htmlspecialchars($rental['end_date']); ?></td>
+                        <td>$<?php echo htmlspecialchars(number_format((float)$rental['total_price'], 2)); ?></td>
+                        <td><span class="status-badge"><?php echo htmlspecialchars($rental['status']); ?></span></td>
+                    </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+    <?php else: ?>
+        <p style="background: #fff; padding: 20px; border-radius: 8px; color: #6c757d; margin-bottom: 40px;">
+            You have no active or previous vehicle reservations.
+        </p>
+    <?php endif; ?>
+
+    <!-- Section: Available Vehicles Fleet -->
+    <h2 class="header-title">Available Fleet</h2>
     <div class="catalog-grid">
         <?php if (!empty($cars)): ?>
             <?php foreach ($cars as $car): ?>
@@ -174,8 +170,6 @@ try {
                     </div>
                 </div>
             <?php endforeach; ?>
-        <?php else: ?>
-            <p style="text-align: center; grid-column: 1 / -1; color: #6c757d;">No vehicles currently available in the catalog.</p>
         <?php endif; ?>
     </div>
 </div>

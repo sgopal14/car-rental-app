@@ -2,7 +2,6 @@
 session_start();
 require_once 'db.php';
 
-// Enforce POST requests
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     header("Location: user_dashboard.php");
     exit();
@@ -37,7 +36,7 @@ if (!$car_id || empty($start_date) || empty($end_date)) {
 }
 
 try {
-    // 3. Fetch vehicle details using SELECT * to safely support schema variations
+    // 3. Retrieve vehicle details using SELECT *
     $stmt = $pdo->prepare("SELECT * FROM cars WHERE id = :id");
     $stmt->execute([':id' => $car_id]);
     $car = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -52,7 +51,6 @@ try {
         die("Selected vehicle not found. <a href='user_dashboard.php'>Return to Catalog</a>");
     }
 
-    // Safely extract price rate
     $daily_rate = (float)(
         $car['price_per_day'] ?? 
         $car['daily_rate'] ?? 
@@ -62,7 +60,7 @@ try {
         50.00
     );
 
-    // Calculate total duration in days
+    // Calculate rental duration
     $d1 = new DateTime($start_date);
     $d2 = new DateTime($end_date);
     $days = $d1->diff($d2)->days;
@@ -72,47 +70,24 @@ try {
 
     $total_price = $daily_rate * $days;
 
-    // 4. Ensure target table exists and perform insertion with explicit error reporting
-    $inserted = false;
-    $last_error = '';
-    $target_tables = ['rentals', 'bookings', 'car_rentals'];
-
-    foreach ($target_tables as $table) {
-        try {
-            // Check if table exists in schema
-            $check = $pdo->query("SHOW TABLES LIKE '{$table}'");
-            if ($check->rowCount() === 0) {
-                continue;
-            }
-
-            $insert = $pdo->prepare("
-                INSERT INTO {$table} (user_id, car_id, start_date, end_date, total_price, status) 
-                VALUES (:user_id, :car_id, :start_date, :end_date, :total_price, 'confirmed')
-            ");
-            
-            $insert->execute([
-                ':user_id'     => $user_id,
-                ':car_id'      => $car_id,
-                ':start_date'  => $start_date,
-                ':end_date'    => $end_date,
-                ':total_price' => $total_price
-            ]);
-
-            $inserted = true;
-            break; // Insertion succeeded
-        } catch (PDOException $e) {
-            $last_error = $e->getMessage();
-        }
-    }
-
-    if (!$inserted) {
-        die("Reservation Failed! SQL Error: " . htmlspecialchars($last_error ?: "No valid target table found in database."));
-    }
+    // 4. Direct insertion into rentals table
+    $insert = $pdo->prepare("
+        INSERT INTO rentals (user_id, car_id, start_date, end_date, total_price, status) 
+        VALUES (:user_id, :car_id, :start_date, :end_date, :total_price, 'confirmed')
+    ");
+    
+    $insert->execute([
+        ':user_id'     => $user_id,
+        ':car_id'      => $car_id,
+        ':start_date'  => $start_date,
+        ':end_date'    => $end_date,
+        ':total_price' => $total_price
+    ]);
 
     header("Location: user_dashboard.php?booking=success");
     exit();
 
 } catch (PDOException $e) {
-    die("Database Error: " . htmlspecialchars($e->getMessage()));
+    die("Reservation Failed! Database Error: " . htmlspecialchars($e->getMessage()));
 }
-
+?>
