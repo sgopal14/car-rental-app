@@ -164,29 +164,38 @@ try {
         $model = $car['model'] ?? $car['car_model'] ?? '';
         $price = $car['daily_rate'] ?? $car['price_per_day'] ?? $car['price'] ?? '0.00';
         
-        // Extract the non-empty image column from the DB row
-        $raw_image = !empty($car['image_url']) ? $car['image_url'] : 
-                    (!empty($car['image']) ? $car['image'] : 
-                    (!empty($car['photo']) ? $car['photo'] : 'uploads/default_car.jpg'));
+        // 1. Inspect all potential DB image column keys
+        $db_image = trim($car['image_url'] ?? $car['image'] ?? $car['photo'] ?? $car['car_image'] ?? '');
 
-        // Format relative web root path
-        $image_src = '/' . ltrim($raw_image, '/');
+        // 2. Fall back to default only if DB column is completely empty
+        if (empty($db_image)) {
+            $image_src = '/uploads/default_car.jpg';
+        } else {
+            // Prepend uploads/ if the DB string only stored "rav4.jpg"
+            if (strpos($db_image, 'uploads/') === false) {
+                $db_image = 'uploads/' . ltrim($db_image, '/');
+            }
+            $image_src = '/' . ltrim($db_image, '/');
+        }
     ?>
     <div class="card">
         <img src="<?php echo htmlspecialchars($image_src); ?>" 
              alt="<?php echo htmlspecialchars($make . ' ' . $model); ?>" 
              class="card-img"
-             //onerror="this.onerror=null; this.src='/uploads/default_car.jpg';">
+             onerror="this.onerror=null; this.src='/uploads/default_car.jpg';">
         
         <div class="card-body">
             <div class="card-title"><?php echo htmlspecialchars($make . ' ' . $model); ?></div>
+            
             <div class="card-details">
                 Category: <?php echo htmlspecialchars($car['category'] ?? $car['type'] ?? 'Standard'); ?><br>
                 Transmission: <?php echo htmlspecialchars($car['transmission'] ?? 'Automatic'); ?>
             </div>
+
             <div class="card-price">
                 $<?php echo htmlspecialchars(number_format((float)$price, 2)); ?> / day
             </div>
+
             <a href="rent.php?id=<?php echo htmlspecialchars($car['id']); ?>" class="btn-rent">Reserve Vehicle</a>
         </div>
     </div>
