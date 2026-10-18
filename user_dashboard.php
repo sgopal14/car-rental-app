@@ -176,7 +176,7 @@ try {
         <img src="<?php echo htmlspecialchars($image_src); ?>" 
              alt="<?php echo htmlspecialchars($make . ' ' . $model); ?>" 
              class="card-img"
-             onerror="this.onerror=null; this.src='/uploads/default_car.jpg';">
+             //onerror="this.onerror=null; this.src='/uploads/default_car.jpg';">
         
         <div class="card-body">
             <div class="card-title"><?php echo htmlspecialchars($make . ' ' . $model); ?></div>
