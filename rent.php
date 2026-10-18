@@ -86,12 +86,14 @@ $image_src = '/' . ltrim($image_file, '/');
                  alt="Vehicle" 
                  onerror="this.onerror=null; this.src='/uploads/default_car.jpg';">
             
-            <div class="car-details">
-                <h2><?php echo htmlspecialchars($make . ' ' . $model); ?></h2>
-                <p>Category: <?php echo htmlspecialchars($car['category'] ?? 'Standard'); ?></p>
-                <div class="price-tag">$<?php echo htmlspecialchars(number_format((float)$price, 2)); ?> / day</div>
-            </div>
-        </div>
+            <div class="car-details" style="margin-bottom: 25px;">
+    <h2><?php echo htmlspecialchars($make . ' ' . $model); ?></h2>
+    <p><strong>Category:</strong> <?php echo htmlspecialchars($car['category'] ?? 'Standard'); ?></p>
+    <p><strong>Transmission:</strong> <?php echo htmlspecialchars($car['transmission'] ?? 'Automatic'); ?></p>
+    <div class="price-tag" style="font-size: 20px; color: #28a745; font-weight: bold; margin-top: 10px;">
+        $<?php echo htmlspecialchars(number_format((float)$price, 2)); ?> / day
+    </div>
+</div>
 
         <form action="process_rental.php" method="POST">
             <input type="hidden" name="car_id" value="<?php echo htmlspecialchars($car['id']); ?>">

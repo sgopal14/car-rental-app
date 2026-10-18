@@ -2,7 +2,7 @@
 session_start();
 require_once 'db.php';
 
-// Safe CSRF verification check (prevents crashing if function is missing)
+// Safe CSRF verification check
 if ($_SERVER['REQUEST_METHOD'] !== 'GET' && function_exists('verify_csrf_token')) {
     verify_csrf_token();
 }
@@ -28,7 +28,6 @@ try {
     $stmt = $pdo->prepare("SELECT * FROM cars");
     $stmt->execute();
     $cars = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    //echo "<pre>"; print_r($cars[0] ?? 'No cars found'); echo "</pre>"; die();
 } catch (PDOException $e) {
     try {
         $stmt = $pdo->prepare("SELECT * FROM vehicles");
@@ -85,13 +84,14 @@ try {
         }
         .catalog-grid { 
             display: grid; 
-            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); 
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); 
             gap: 25px; 
         }
         .card { 
             background: #fff; 
             border-radius: 10px; 
             overflow: hidden; 
+            border-top: 4px solid #007bff;
             box-shadow: 0 4px 10px rgba(0,0,0,0.08); 
             transition: transform 0.2s ease, box-shadow 0.2s ease; 
         }
@@ -99,36 +99,29 @@ try {
             transform: translateY(-5px); 
             box-shadow: 0 6px 15px rgba(0,0,0,0.12); 
         }
-        .card-img { 
-            width: 100%; 
-            height: 200px; 
-            object-fit: cover; 
-            background-color: #e9ecef; 
-            display: block; 
-        }
-        .card-body { padding: 20px; }
+        .card-body { padding: 25px; }
         .card-title { 
-            font-size: 18px; 
+            font-size: 20px; 
             font-weight: bold; 
             color: #1a252f; 
-            margin-bottom: 8px; 
+            margin-bottom: 12px; 
         }
         .card-details { 
             font-size: 14px; 
             color: #6c757d; 
-            margin-bottom: 15px; 
-            line-height: 1.5; 
+            margin-bottom: 20px; 
+            line-height: 1.6; 
         }
         .card-price { 
-            font-size: 16px; 
+            font-size: 18px; 
             font-weight: bold; 
             color: #28a745; 
-            margin-bottom: 15px; 
+            margin-bottom: 20px; 
         }
         .btn-rent { 
             display: block; 
             width: 100%; 
-            padding: 10px; 
+            padding: 12px; 
             text-align: center; 
             background-color: #007bff; 
             color: white; 
@@ -159,50 +152,28 @@ try {
     <div class="catalog-grid">
         <?php if (!empty($cars)): ?>
             <?php foreach ($cars as $car): ?>
-    <?php 
-        $make = $car['make'] ?? $car['car_make'] ?? $car['brand'] ?? 'Vehicle';
-        $model = $car['model'] ?? $car['car_model'] ?? '';
-        $price = $car['daily_rate'] ?? $car['price_per_day'] ?? $car['price'] ?? '0.00';
-        
-        // 1. Inspect all potential DB image column keys
-        //$db_image = trim($car['image_url'] ?? $car['image'] ?? $car['photo'] ?? $car['car_image'] ?? '');
+                <?php 
+                    $make = $car['make'] ?? $car['car_make'] ?? $car['brand'] ?? 'Vehicle';
+                    $model = $car['model'] ?? $car['car_model'] ?? '';
+                    $price = $car['daily_rate'] ?? $car['price_per_day'] ?? $car['price'] ?? '0.00';
+                ?>
+                <div class="card">
+                    <div class="card-body">
+                        <div class="card-title"><?php echo htmlspecialchars($make . ' ' . $model); ?></div>
+                        
+                        <div class="card-details">
+                            <strong>Category:</strong> <?php echo htmlspecialchars($car['category'] ?? $car['type'] ?? 'Standard'); ?><br>
+                            <strong>Transmission:</strong> <?php echo htmlspecialchars($car['transmission'] ?? 'Automatic'); ?>
+                        </div>
 
+                        <div class="card-price">
+                            $<?php echo htmlspecialchars(number_format((float)$price, 2)); ?> / day
+                        </div>
 
-        // 2. Fall back to default only if DB column is completely empty
-        $image_file = $car['car_image'] ?? $car['image_url'] ?? $car['image'] ?? '';
-        
-        if (empty($image_file)) {
-            $image_src = '/uploads/default_car.jpg';
-        } else {
-            // Ensure uploads/ path is present
-            if (strpos($image_file, 'uploads/') === false) {
-                $image_file = 'uploads/' . ltrim($image_file, '/');
-            }
-            $image_src = '/' . ltrim($image_file, '/');
-        }
-    ?>
-    <div class="card">
-        <img src="<?php echo htmlspecialchars($image_src); ?>" 
-             alt="Vehicle Image" 
-             class="card-img">    
-            
-        
-        <div class="card-body">
-            <div class="card-title"><?php echo htmlspecialchars($make . ' ' . $model); ?></div>
-            
-            <div class="card-details">
-                Category: <?php echo htmlspecialchars($car['category'] ?? $car['type'] ?? 'Standard'); ?><br>
-                Transmission: <?php echo htmlspecialchars($car['transmission'] ?? 'Automatic'); ?>
-            </div>
-
-            <div class="card-price">
-                $<?php echo htmlspecialchars(number_format((float)$price, 2)); ?> / day
-            </div>
-
-            <a href="rent.php?id=<?php echo htmlspecialchars($car['id']); ?>" class="btn-rent">Reserve Vehicle</a>
-        </div>
-    </div>
-<?php endforeach; ?>
+                        <a href="rent.php?id=<?php echo htmlspecialchars($car['id']); ?>" class="btn-rent">Reserve Vehicle</a>
+                    </div>
+                </div>
+            <?php endforeach; ?>
         <?php else: ?>
             <p style="text-align: center; grid-column: 1 / -1; color: #6c757d;">No vehicles currently available in the catalog.</p>
         <?php endif; ?>
