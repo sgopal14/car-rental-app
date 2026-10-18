@@ -7,11 +7,10 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit();
 }
 
-// 1. Primary: Use the application's global helper if defined in db.php
+// Validate CSRF token using db.php helper or fallback session token
 if (function_exists('verify_csrf_token')) {
     verify_csrf_token();
 } else {
-    // 2. Fallback: Check posted tokens against session values
     $posted_token = $_POST['csrf_token'] ?? $_POST['token'] ?? '';
     $session_token = $_SESSION['csrf_token'] ?? $_SESSION['token'] ?? '';
 
@@ -36,12 +35,13 @@ if (!$car_id || empty($start_date) || empty($end_date)) {
 }
 
 try {
-    $stmt = $pdo->prepare("SELECT daily_rate, price, price_per_day FROM cars WHERE id = :id");
+    // Query SELECT * to avoid throwing 1054 Unknown Column errors
+    $stmt = $pdo->prepare("SELECT * FROM cars WHERE id = :id");
     $stmt->execute([':id' => $car_id]);
     $car = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$car) {
-        $stmt = $pdo->prepare("SELECT daily_rate, price, price_per_day FROM vehicles WHERE id = :id");
+        $stmt = $pdo->prepare("SELECT * FROM vehicles WHERE id = :id");
         $stmt->execute([':id' => $car_id]);
         $car = $stmt->fetch(PDO::FETCH_ASSOC);
     }
@@ -50,15 +50,27 @@ try {
         die("Selected vehicle not found. <a href='user_dashboard.php'>Return to Catalog</a>");
     }
 
-    $daily_rate = (float)($car['daily_rate'] ?? $car['price_per_day'] ?? $car['price'] ?? 0.00);
+    // Safely extract price rate regardless of exact column naming
+    $daily_rate = (float)(
+        $car['price_per_day'] ?? 
+        $car['daily_rate'] ?? 
+        $car['rate'] ?? 
+        $car['price'] ?? 
+        $car['cost'] ?? 
+        50.00
+    );
 
+    // Calculate duration in days
     $d1 = new DateTime($start_date);
     $d2 = new DateTime($end_date);
     $days = $d1->diff($d2)->days;
-    if ($days <= 0) { $days = 1; }
+    if ($days <= 0) { 
+        $days = 1; 
+    }
 
     $total_price = $daily_rate * $days;
 
+    // Insert booking into database
     try {
         $insert = $pdo->prepare("INSERT INTO rentals (user_id, car_id, start_date, end_date, total_price, status) VALUES (:user_id, :car_id, :start_date, :end_date, :total_price, 'confirmed')");
         $insert->execute([
