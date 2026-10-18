@@ -2,9 +2,9 @@
 session_start();
 require_once 'db.php';
 
-// Safe CSRF check
-if ($_SERVER['REQUEST_METHOD'] !== 'GET' && function_exists('verify_csrf_token')) {
-    verify_csrf_token();
+// Generate CSRF token if not already set
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
 
 // Authenticate session
@@ -13,7 +13,6 @@ if (!isset($_SESSION['user_id'])) {
     exit();
 }
 
-// Validate vehicle ID passed in URL query string
 $car_id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
 if (!$car_id) {
     die("Invalid vehicle selection. <a href='user_dashboard.php'>Return to Catalog</a>");
@@ -22,7 +21,6 @@ if (!$car_id) {
 $car = null;
 $error_msg = '';
 
-// Fetch car record safely from MySQL RDS
 try {
     $stmt = $pdo->prepare("SELECT * FROM cars WHERE id = :id");
     $stmt->execute([':id' => $car_id]);
@@ -41,7 +39,6 @@ if (!$car && empty($error_msg)) {
     die("Vehicle not found. <a href='user_dashboard.php'>Return to Catalog</a>");
 }
 
-// Map database column names safely
 $make = $car['make'] ?? $car['car_make'] ?? $car['brand'] ?? 'Vehicle';
 $model = $car['model'] ?? $car['car_model'] ?? '';
 $price = $car['daily_rate'] ?? $car['price_per_day'] ?? $car['price'] ?? '0.00';
@@ -59,7 +56,6 @@ $price = $car['daily_rate'] ?? $car['price_per_day'] ?? $car['price'] ?? '0.00';
         .container { max-width: 650px; margin: 40px auto; background: #fff; padding: 30px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.08); border-top: 4px solid #28a745; }
         .car-details { margin-bottom: 25px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
         .car-details h2 { color: #1a252f; margin-bottom: 10px; font-size: 24px; }
-        .car-details p { color: #6c757d; font-size: 15px; margin-bottom: 5px; }
         .price-tag { font-size: 22px; color: #28a745; font-weight: bold; margin-top: 15px; }
         .form-group { margin-bottom: 20px; }
         .form-group label { display: block; margin-bottom: 8px; font-weight: bold; color: #1a252f; }
@@ -67,7 +63,6 @@ $price = $car['daily_rate'] ?? $car['price_per_day'] ?? $car['price'] ?? '0.00';
         .btn-submit { background-color: #28a745; color: white; border: none; padding: 12px 20px; font-size: 16px; font-weight: bold; border-radius: 5px; cursor: pointer; width: 100%; }
         .btn-submit:hover { background-color: #218838; }
         .back-link { display: inline-block; margin-top: 20px; color: #007bff; text-decoration: none; font-weight: bold; }
-        .back-link:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
@@ -89,6 +84,8 @@ $price = $car['daily_rate'] ?? $car['price_per_day'] ?? $car['price'] ?? '0.00';
         </div>
 
         <form action="process_rental.php" method="POST">
+            <!-- CSRF Token Hidden Input -->
+            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token']); ?>">
             <input type="hidden" name="car_id" value="<?php echo htmlspecialchars($car['id']); ?>">
             
             <div class="form-group">

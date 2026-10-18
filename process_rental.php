@@ -2,17 +2,18 @@
 session_start();
 require_once 'db.php';
 
-// Safe CSRF verification check
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     header("Location: user_dashboard.php");
     exit();
 }
 
-if (function_exists('verify_csrf_token')) {
-    verify_csrf_token();
+// Validate CSRF token
+$posted_token = $_POST['csrf_token'] ?? '';
+if (empty($posted_token) || !isset($_SESSION['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $posted_token)) {
+    http_response_code(403);
+    die("403 Forbidden: CSRF Token Validation Failed. <a href='user_dashboard.php'>Return to Catalog</a>");
 }
 
-// Authenticate session
 if (!isset($_SESSION['user_id'])) {
     header("Location: index.php");
     exit();
@@ -24,12 +25,10 @@ $start_date = $_POST['start_date'] ?? '';
 $end_date = $_POST['end_date'] ?? '';
 
 if (!$car_id || empty($start_date) || empty($end_date)) {
-    die("Invalid form submission. <a href='user_dashboard.php'>Return to Catalog</a>");
+    die("Invalid form input. <a href='user_dashboard.php'>Return to Catalog</a>");
 }
 
-// Calculate total rental cost
 try {
-    // 1. Fetch daily rate
     $stmt = $pdo->prepare("SELECT daily_rate, price, price_per_day FROM cars WHERE id = :id");
     $stmt->execute([':id' => $car_id]);
     $car = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -41,22 +40,18 @@ try {
     }
 
     if (!$car) {
-        die("Vehicle not found. <a href='user_dashboard.php'>Return to Catalog</a>");
+        die("Selected vehicle not found. <a href='user_dashboard.php'>Return to Catalog</a>");
     }
 
     $daily_rate = (float)($car['daily_rate'] ?? $car['price_per_day'] ?? $car['price'] ?? 0.00);
 
-    // 2. Calculate duration in days
     $d1 = new DateTime($start_date);
     $d2 = new DateTime($end_date);
     $days = $d1->diff($d2)->days;
-    if ($days <= 0) {
-        $days = 1;
-    }
+    if ($days <= 0) { $days = 1; }
 
     $total_price = $daily_rate * $days;
 
-    // 3. Insert reservation record into database
     try {
         $insert = $pdo->prepare("INSERT INTO rentals (user_id, car_id, start_date, end_date, total_price, status) VALUES (:user_id, :car_id, :start_date, :end_date, :total_price, 'confirmed')");
         $insert->execute([
@@ -67,7 +62,6 @@ try {
             ':total_price' => $total_price
         ]);
     } catch (PDOException $e1) {
-        // Fallback for 'reservations' or 'bookings' table
         $insert = $pdo->prepare("INSERT INTO reservations (user_id, car_id, start_date, end_date, total_price, status) VALUES (:user_id, :car_id, :start_date, :end_date, :total_price, 'confirmed')");
         $insert->execute([
             ':user_id' => $user_id,
@@ -78,11 +72,10 @@ try {
         ]);
     }
 
-    // Redirect user to dashboard with success parameter
     header("Location: user_dashboard.php?booking=success");
     exit();
 
 } catch (PDOException $e) {
-    die("Database Error processing rental: " . htmlspecialchars($e->getMessage()));
+    die("Database Error: " . htmlspecialchars($e->getMessage()));
 }
 ?>
