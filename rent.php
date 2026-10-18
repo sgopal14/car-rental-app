@@ -21,16 +21,11 @@ if (!$car_id) {
 $car = null;
 $error_msg = '';
 
+// Query ONLY the cars table
 try {
     $stmt = $pdo->prepare("SELECT * FROM cars WHERE id = :id");
     $stmt->execute([':id' => $car_id]);
     $car = $stmt->fetch(PDO::FETCH_ASSOC);
-
-    if (!$car) {
-        $stmt = $pdo->prepare("SELECT * FROM vehicles WHERE id = :id");
-        $stmt->execute([':id' => $car_id]);
-        $car = $stmt->fetch(PDO::FETCH_ASSOC);
-    }
 } catch (PDOException $e) {
     $error_msg = "Database Error: " . htmlspecialchars($e->getMessage());
 }
