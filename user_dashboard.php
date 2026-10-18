@@ -28,7 +28,7 @@ try {
     $stmt = $pdo->prepare("SELECT * FROM cars");
     $stmt->execute();
     $cars = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    echo "<pre>"; print_r($cars[0] ?? 'No cars found'); echo "</pre>"; die();
+    //echo "<pre>"; print_r($cars[0] ?? 'No cars found'); echo "</pre>"; die();
 } catch (PDOException $e) {
     try {
         $stmt = $pdo->prepare("SELECT * FROM vehicles");
@@ -159,35 +159,38 @@ try {
     <div class="catalog-grid">
         <?php if (!empty($cars)): ?>
             <?php foreach ($cars as $car): ?>
-                <?php 
-                    $make = $car['make'] ?? $car['car_make'] ?? $car['brand'] ?? 'Vehicle';
-                    $model = $car['model'] ?? $car['car_model'] ?? '';
-                    $price = $car['daily_rate'] ?? $car['price_per_day'] ?? $car['price'] ?? '0.00';
-                    $image_path = $car['image_url'] ?? $car['image'] ?? $car['photo'] ?? $car['car_image'] ?? 'uploads/default_car.jpg';
-                    $image_src = '/' . ltrim($image_path, '/');
-                ?>
-                <div class="card">
-                    <img src="<?php echo htmlspecialchars($image_src); ?>" 
-                         alt="<?php echo htmlspecialchars($make . ' ' . $model); ?>" 
-                         class="card-img"
-                         onerror="this.onerror=null; this.src='/uploads/default_car.jpg';">
-                    
-                    <div class="card-body">
-                        <div class="card-title"><?php echo htmlspecialchars($make . ' ' . $model); ?></div>
-                        
-                        <div class="card-details">
-                            Category: <?php echo htmlspecialchars($car['category'] ?? $car['type'] ?? 'Standard'); ?><br>
-                            Transmission: <?php echo htmlspecialchars($car['transmission'] ?? 'Automatic'); ?>
-                        </div>
+    <?php 
+        $make = $car['make'] ?? $car['car_make'] ?? $car['brand'] ?? 'Vehicle';
+        $model = $car['model'] ?? $car['car_model'] ?? '';
+        $price = $car['daily_rate'] ?? $car['price_per_day'] ?? $car['price'] ?? '0.00';
+        
+        // Extract the non-empty image column from the DB row
+        $raw_image = !empty($car['image_url']) ? $car['image_url'] : 
+                    (!empty($car['image']) ? $car['image'] : 
+                    (!empty($car['photo']) ? $car['photo'] : 'uploads/default_car.jpg'));
 
-                        <div class="card-price">
-                            $<?php echo htmlspecialchars(number_format((float)$price, 2)); ?> / day
-                        </div>
-
-                        <a href="rent.php?id=<?php echo htmlspecialchars($car['id']); ?>" class="btn-rent">Reserve Vehicle</a>
-                    </div>
-                </div>
-            <?php endforeach; ?>
+        // Format relative web root path
+        $image_src = '/' . ltrim($raw_image, '/');
+    ?>
+    <div class="card">
+        <img src="<?php echo htmlspecialchars($image_src); ?>" 
+             alt="<?php echo htmlspecialchars($make . ' ' . $model); ?>" 
+             class="card-img"
+             onerror="this.onerror=null; this.src='/uploads/default_car.jpg';">
+        
+        <div class="card-body">
+            <div class="card-title"><?php echo htmlspecialchars($make . ' ' . $model); ?></div>
+            <div class="card-details">
+                Category: <?php echo htmlspecialchars($car['category'] ?? $car['type'] ?? 'Standard'); ?><br>
+                Transmission: <?php echo htmlspecialchars($car['transmission'] ?? 'Automatic'); ?>
+            </div>
+            <div class="card-price">
+                $<?php echo htmlspecialchars(number_format((float)$price, 2)); ?> / day
+            </div>
+            <a href="rent.php?id=<?php echo htmlspecialchars($car['id']); ?>" class="btn-rent">Reserve Vehicle</a>
+        </div>
+    </div>
+<?php endforeach; ?>
         <?php else: ?>
             <p style="text-align: center; grid-column: 1 / -1; color: #6c757d;">No vehicles currently available in the catalog.</p>
         <?php endif; ?>
