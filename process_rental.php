@@ -7,11 +7,18 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit();
 }
 
-// Validate CSRF token
-$posted_token = $_POST['csrf_token'] ?? '';
-if (empty($posted_token) || !isset($_SESSION['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $posted_token)) {
-    http_response_code(403);
-    die("403 Forbidden: CSRF Token Validation Failed. <a href='user_dashboard.php'>Return to Catalog</a>");
+// 1. Primary: Use the application's global helper if defined in db.php
+if (function_exists('verify_csrf_token')) {
+    verify_csrf_token();
+} else {
+    // 2. Fallback: Check posted tokens against session values
+    $posted_token = $_POST['csrf_token'] ?? $_POST['token'] ?? '';
+    $session_token = $_SESSION['csrf_token'] ?? $_SESSION['token'] ?? '';
+
+    if (empty($posted_token) || empty($session_token) || !hash_equals($session_token, $posted_token)) {
+        http_response_code(403);
+        die("403 Forbidden: CSRF Token Validation Failed. <a href='user_dashboard.php'>Return to Catalog</a>");
+    }
 }
 
 if (!isset($_SESSION['user_id'])) {

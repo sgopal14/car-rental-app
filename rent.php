@@ -2,16 +2,16 @@
 session_start();
 require_once 'db.php';
 
-// Generate CSRF token if not already set
-if (empty($_SESSION['csrf_token'])) {
-    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
-}
-
 // Authenticate session
 if (!isset($_SESSION['user_id'])) {
     header("Location: index.php");
     exit();
 }
+
+// Generate token using db.php helper or fallback session variable
+$csrf_token = function_exists('generate_csrf_token') 
+    ? generate_csrf_token() 
+    : ($_SESSION['csrf_token'] ?? ($_SESSION['csrf_token'] = bin2hex(random_bytes(32))));
 
 $car_id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
 if (!$car_id) {
@@ -84,8 +84,9 @@ $price = $car['daily_rate'] ?? $car['price_per_day'] ?? $car['price'] ?? '0.00';
         </div>
 
         <form action="process_rental.php" method="POST">
-            <!-- CSRF Token Hidden Input -->
-            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token']); ?>">
+            <!-- CSRF Token Hidden Inputs -->
+            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
+            <input type="hidden" name="token" value="<?php echo htmlspecialchars($csrf_token); ?>">
             <input type="hidden" name="car_id" value="<?php echo htmlspecialchars($car['id']); ?>">
             
             <div class="form-group">
