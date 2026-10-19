@@ -8,9 +8,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && function_exists('verify_csrf_token'
     verify_csrf_token();
 }
 
-// 1. Session & Role Access Control
-$allowed_admin_roles = ['admin', 'agent', 'branch_agent', 'fleet_manager', 'staff'];
-$current_role = strtolower($_SESSION['role'] ?? $_SESSION['user_role'] ?? '');
+// 1. Session & Strict 4-Role Access Control Matrix
+$allowed_admin_roles = ['admin', 'agent', 'fleet_manager'];
+$current_role = strtolower($_SESSION['role'] ?? $_SESSION['user_role'] ?? 'customer');
 
 if (!isset($_SESSION['user_id']) || !in_array($current_role, $allowed_admin_roles, true)) {
     header("Location: index.php");
@@ -32,8 +32,6 @@ function table_exists($pdo, $table_name) {
 
 // Detect whether system uses 'rentals' or 'bookings' table
 $rental_table = table_exists($pdo, 'rentals') ? 'rentals' : 'bookings';
-$has_logs_table = table_exists($pdo, 'audit_logs') || table_exists($pdo, 'logs') || table_exists($pdo, 'security_logs');
-$log_table = table_exists($pdo, 'audit_logs') ? 'audit_logs' : (table_exists($pdo, 'logs') ? 'logs' : 'security_logs');
 
 // 2. Handle CSV Report Exports
 if (isset($_GET['export'])) {
@@ -74,20 +72,38 @@ if (isset($_GET['export'])) {
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     $action = $_POST['action'];
 
-    // USER MANAGEMENT: Update Role
+    // USER MANAGEMENT: Update Role (Strictly limited to admin, fleet_manager, agent, customer)
     if ($action === 'update_role') {
         $target_user_id = intval($_POST['user_id'] ?? 0);
-        $new_role = $_POST['role'] ?? 'customer';
-        $valid_roles = ['customer', 'admin', 'fleet_manager', 'branch_agent', 'agent', 'staff'];
+        $new_role = strtolower(trim($_POST['role'] ?? 'customer'));
 
-        if (in_array($new_role, $valid_roles, true)) {
+        // Standardize inputs to exact target values
+        $valid_roles = ['customer', 'agent', 'fleet_manager', 'admin'];
+
+        // Normalize legacy role aliases if present
+        if ($new_role === 'user') { $new_role = 'customer'; }
+        if (in_array($new_role, ['branch_agent', 'staff'], true)) { $new_role = 'agent'; }
+
+        if ($target_user_id > 0 && in_array($new_role, $valid_roles, true)) {
             try {
-                $stmt = $pdo->prepare("UPDATE users SET role = ? WHERE id = ?");
-                $stmt->execute([$new_role, $target_user_id]);
-                $message = "User role updated successfully to " . strtoupper($new_role) . ".";
+                $stmt = $pdo->prepare("UPDATE users SET role = :role WHERE id = :id");
+                $stmt->execute([
+                    ':role' => $new_role,
+                    ':id'   => $target_user_id
+                ]);
+
+                // Live-update session variables if admin updates their own account
+                if ($target_user_id === $_SESSION['user_id']) {
+                    $_SESSION['role']      = $new_role;
+                    $_SESSION['user_role'] = $new_role;
+                }
+
+                $message = "User #" . $target_user_id . " role successfully updated to '" . strtoupper($new_role) . "'.";
             } catch (PDOException $e) {
                 $error = "Failed to update user role: " . $e->getMessage();
             }
+        } else {
+            $error = "Invalid user ID or unrecognized role type selected.";
         }
     }
     // USER MANAGEMENT: Delete User
@@ -115,8 +131,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         if (!empty($make) && !empty($model) && $price > 0) {
             try {
                 $cols = $pdo->query("SHOW COLUMNS FROM cars")->fetchAll(PDO::FETCH_COLUMN);
-                $make_col = in_array('brand', $cols, true) ? 'brand' : (in_array('make', $cols, true) ? 'make' : 'brand');
-                $price_col = in_array('price_per_day', $cols, true) ? 'price_per_day' : (in_array('daily_rate', $cols, true) ? 'daily_rate' : 'price');
+                $make_col = in_array('brand', $cols, true) ? 'brand' : 'make';
+                $price_col = in_array('price_per_day', $cols, true) ? 'price_per_day' : 'daily_rate';
 
                 $stmt = $pdo->prepare("INSERT INTO cars ({$make_col}, model, category, {$price_col}, status) VALUES (?, ?, ?, ?, 'available')");
                 $stmt->execute([$make, $model, $category, $price]);
@@ -184,25 +200,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     }
 }
 
-// 4. Fetch All Comprehensive Admin Data Safely
+// 4. Fetch Admin Data
 $total_users = 0; $total_cars = 0; $available_cars = 0; $maintenance_cars = 0; $total_revenue = 0.00;
-$users = []; $cars = []; $transactions = []; $audit_logs = [];
+$users = []; $cars = []; $transactions = [];
 
 try {
-    // Executive Metrics
     $total_users = (int)$pdo->query("SELECT COUNT(*) FROM users")->fetchColumn();
     $total_cars = (int)$pdo->query("SELECT COUNT(*) FROM cars")->fetchColumn();
     $available_cars = (int)$pdo->query("SELECT COUNT(*) FROM cars WHERE status = 'available' OR status IS NULL")->fetchColumn();
     $maintenance_cars = (int)$pdo->query("SELECT COUNT(*) FROM cars WHERE status = 'maintenance'")->fetchColumn();
     $total_revenue = (float)$pdo->query("SELECT COALESCE(SUM(total_price), 0) FROM {$rental_table} WHERE status IN ('confirmed', 'completed', 'active')")->fetchColumn();
 
-    // User Records
     $users = $pdo->query("SELECT * FROM users ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC);
-
-    // Fleet Records (Safe SELECT *)
     $cars = $pdo->query("SELECT * FROM cars ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC);
 
-    // Transaction Records (Queries rentals and users directly without column-name dependencies)
     $transactions = $pdo->query("
         SELECT r.*, u.email AS user_email, u.name AS user_name
         FROM {$rental_table} r
@@ -210,13 +221,8 @@ try {
         ORDER BY r.id DESC
     ")->fetchAll(PDO::FETCH_ASSOC);
 
-    // Fetch Security / Audit Logs if table exists
-    if ($has_logs_table) {
-        $audit_logs = $pdo->query("SELECT * FROM {$log_table} ORDER BY id DESC LIMIT 50")->fetchAll(PDO::FETCH_ASSOC);
-    }
-
 } catch (PDOException $e) {
-    $error = "Database Notification: " . $e->getMessage();
+    $error = "Database Error: " . $e->getMessage();
 }
 
 $csrf_token = function_exists('get_csrf_token') ? get_csrf_token() : ($_SESSION['csrf_token'] ?? '');
@@ -226,7 +232,7 @@ $csrf_token = function_exists('get_csrf_token') ? get_csrf_token() : ($_SESSION[
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DriveEase - Executive Administration Master Dashboard</title>
+    <title>DriveEase - Master Control Panel</title>
     <style>
         * { box-sizing: border-box; }
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; margin: 0; padding: 0; color: #333; }
@@ -269,7 +275,7 @@ $csrf_token = function_exists('get_csrf_token') ? get_csrf_token() : ($_SESSION[
         .badge { padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; text-transform: uppercase; }
         .badge-admin { background: #cce5ff; color: #004085; }
         .badge-fleet_manager { background: #d4edda; color: #155724; }
-        .badge-branch_agent, .badge-agent { background: #fff3cd; color: #856404; }
+        .badge-agent { background: #fff3cd; color: #856404; }
         .badge-customer { background: #e2e3e5; color: #383d41; }
 
         .btn-action { padding: 5px 10px; border-radius: 4px; border: none; font-size: 11px; font-weight: bold; cursor: pointer; }
@@ -280,7 +286,7 @@ $csrf_token = function_exists('get_csrf_token') ? get_csrf_token() : ($_SESSION[
 <body>
 
 <div class="header">
-    <h1>DriveEase Executive Master Control</h1>
+    <h1>DriveEase Master Control</h1>
     <div class="user-info">
         <span>Logged in as: <strong><?php echo htmlspecialchars($_SESSION['user_name'] ?? 'Administrator'); ?></strong> (<?php echo htmlspecialchars(strtoupper($current_role)); ?>)</span>
         <a href="logout.php" class="btn-logout">Logout</a>
@@ -297,7 +303,7 @@ $csrf_token = function_exists('get_csrf_token') ? get_csrf_token() : ($_SESSION[
         <div class="alert alert-danger"><?php echo htmlspecialchars($error); ?></div>
     <?php endif; ?>
 
-    <!-- 1. Executive Key Performance Indicators (KPIs) -->
+    <!-- 1. Executive Key Performance Indicators -->
     <div class="stats-grid">
         <div class="stat-card">
             <h3>Total Users</h3>
@@ -321,10 +327,10 @@ $csrf_token = function_exists('get_csrf_token') ? get_csrf_token() : ($_SESSION[
         </div>
     </div>
 
-    <!-- 2. User Management & Role Control Module -->
+    <!-- 2. Strict 4-Role User Management Module -->
     <div class="card">
         <div class="card-header">
-            <h2>User Management & Access Control</h2>
+            <h2>User Management & Privilege Control</h2>
         </div>
         <table>
             <thead>
@@ -341,15 +347,19 @@ $csrf_token = function_exists('get_csrf_token') ? get_csrf_token() : ($_SESSION[
                 <?php foreach ($users as $u): ?>
                     <?php 
                         $disp_name = $u['name'] ?? $u['username'] ?? $u['email'];
-                        $role_name = strtolower($u['role'] ?? 'customer');
+                        $raw_role  = strtolower($u['role'] ?? 'customer');
+                        
+                        // Map legacy or variant strings strictly to the 4 system roles
+                        if ($raw_role === 'user') { $raw_role = 'customer'; }
+                        if (in_array($raw_role, ['branch_agent', 'staff'], true)) { $raw_role = 'agent'; }
                     ?>
                     <tr>
                         <td>#<?php echo $u['id']; ?></td>
                         <td><strong><?php echo htmlspecialchars($disp_name); ?></strong></td>
                         <td><?php echo htmlspecialchars($u['email']); ?></td>
                         <td>
-                            <span class="badge badge-<?php echo htmlspecialchars($role_name); ?>">
-                                <?php echo htmlspecialchars(str_replace('_', ' ', strtoupper($role_name))); ?>
+                            <span class="badge badge-<?php echo htmlspecialchars($raw_role); ?>">
+                                <?php echo htmlspecialchars(str_replace('_', ' ', strtoupper($raw_role))); ?>
                             </span>
                         </td>
                         <td>
@@ -358,10 +368,10 @@ $csrf_token = function_exists('get_csrf_token') ? get_csrf_token() : ($_SESSION[
                                 <input type="hidden" name="action" value="update_role">
                                 <input type="hidden" name="user_id" value="<?php echo $u['id']; ?>">
                                 <select name="role">
-                                    <option value="customer" <?php if ($role_name === 'customer') echo 'selected'; ?>>Customer</option>
-                                    <option value="admin" <?php if ($role_name === 'admin') echo 'selected'; ?>>Admin</option>
-                                    <option value="fleet_manager" <?php if ($role_name === 'fleet_manager') echo 'selected'; ?>>Fleet Manager</option>
-                                    <option value="branch_agent" <?php if (in_array($role_name, ['branch_agent', 'agent'])) echo 'selected'; ?>>Branch Agent</option>
+                                    <option value="customer" <?php if ($raw_role === 'customer') echo 'selected'; ?>>Customer</option>
+                                    <option value="agent" <?php if ($raw_role === 'agent') echo 'selected'; ?>>Agent</option>
+                                    <option value="fleet_manager" <?php if ($raw_role === 'fleet_manager') echo 'selected'; ?>>Fleet Manager</option>
+                                    <option value="admin" <?php if ($raw_role === 'admin') echo 'selected'; ?>>Admin</option>
                                 </select>
                                 <button type="submit" class="btn-action btn-update">Update</button>
                             </form>
@@ -476,10 +486,10 @@ $csrf_token = function_exists('get_csrf_token') ? get_csrf_token() : ($_SESSION[
         </table>
     </div>
 
-    <!-- 4. Branch Operations & Rental Transaction Desk -->
+    <!-- 4. Branch Operations Desk -->
     <div class="card">
         <div class="card-header">
-            <h2>Branch Operations & Rental Desk</h2>
+            <h2>Branch Operations & Rental Transaction Desk</h2>
             <a href="admin_dashboard.php?export=sales_csv" class="btn-export">Export Sales CSV</a>
         </div>
         <table>
@@ -526,42 +536,7 @@ $csrf_token = function_exists('get_csrf_token') ? get_csrf_token() : ($_SESSION[
                         </tr>
                     <?php endforeach; ?>
                 <?php else: ?>
-                    <tr><td colspan="6" style="text-align:center; color:#6c757d;">No customer rental records currently present in system.</td></tr>
-                <?php endif; ?>
-            </tbody>
-        </table>
-    </div>
-
-    <!-- 5. Security & Audit Trails Module -->
-    <div class="card">
-        <div class="card-header">
-            <h2>System Audit Trails & Security Logs</h2>
-        </div>
-        <table>
-            <thead>
-                <tr>
-                    <th>Log ID</th>
-                    <th>Event Type / Activity</th>
-                    <th>User / Context</th>
-                    <th>Timestamp</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php if (!empty($audit_logs)): ?>
-                    <?php foreach ($audit_logs as $log): ?>
-                        <tr>
-                            <td>#<?php echo $log['id'] ?? 'N/A'; ?></td>
-                            <td><strong><?php echo htmlspecialchars($log['action'] ?? $log['event'] ?? $log['type'] ?? 'System Event'); ?></strong></td>
-                            <td><?php echo htmlspecialchars($log['user_email'] ?? $log['username'] ?? $log['details'] ?? 'N/A'); ?></td>
-                            <td><?php echo htmlspecialchars($log['created_at'] ?? $log['timestamp'] ?? 'N/A'); ?></td>
-                        </tr>
-                    <?php endforeach; ?>
-                <?php else: ?>
-                    <tr>
-                        <td colspan="4" style="text-align:center; color:#6c757d;">
-                            <em>No explicit security events logged. Security events (e.g., login attempts, 2FA status, database queries) are monitored via Apache logs at <code>/var/log/apache2/error.log</code>.</em>
-                        </td>
-                    </tr>
+                    <tr><td colspan="6" style="text-align:center; color:#6c757d;">No customer rental records currently present.</td></tr>
                 <?php endif; ?>
             </tbody>
         </table>
