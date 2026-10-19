@@ -7,15 +7,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && function_exists('verify_csrf_token'
     verify_csrf_token();
 }
 
-// Authenticate agent/admin session
+// Authenticate session
 if (!isset($_SESSION['user_id'])) {
     header("Location: index.php");
     exit();
 }
 
-// Ensure the user has staff/admin privileges if roles are configured
-if (isset($_SESSION['role']) && !in_array($_SESSION['role'], ['agent', 'admin', 'staff'])) {
-    header("Location: index.php");
+// Restrict access to staff / agent accounts
+if (isset($_SESSION['role']) && !in_array(strtolower($_SESSION['role']), ['agent', 'admin', 'staff', 'fleet_manager'])) {
+    header("Location: user_dashboard.php");
     exit();
 }
 
@@ -25,7 +25,7 @@ $rentals = [];
 $error_msg = '';
 $success_msg = '';
 
-// Handle actions (e.g., updating rental status or removing vehicles)
+// Handle rental status updates
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     $action = $_POST['action'];
     
@@ -46,16 +46,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 }
 
 try {
-    // 1. Fetch all fleet vehicles using SELECT * to avoid hardcoded column name mismatches
+    // 1. Fetch all fleet vehicles safely
     $stmt = $pdo->prepare("SELECT * FROM cars ORDER BY id DESC");
     $stmt->execute();
     $cars = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    // 2. Fetch all customer rentals using SELECT * joins
+    // 2. Fetch customer rentals with user details
     $rental_query = "
-        SELECT r.*, 
-               c.*, 
-               u.username, u.email
+        SELECT r.*, c.*, u.username, u.email
         FROM rentals r
         LEFT JOIN cars c ON r.car_id = c.id
         LEFT JOIN users u ON r.user_id = u.id
@@ -70,7 +68,6 @@ try {
     $error_msg = "Database Error: " . htmlspecialchars($e->getMessage());
 }
 
-// Generate CSRF token for forms
 $csrf_token = function_exists('generate_csrf_token') 
     ? generate_csrf_token() 
     : ($_SESSION['csrf_token'] ?? ($_SESSION['csrf_token'] = bin2hex(random_bytes(32))));
@@ -80,7 +77,7 @@ $csrf_token = function_exists('generate_csrf_token')
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DriveEase - Agent Management Dashboard</title>
+    <title>DriveEase - Agent Portal</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; color: #333; }
@@ -91,8 +88,6 @@ $csrf_token = function_exists('generate_csrf_token')
         .header-title { margin: 30px 0 15px 0; color: #1a252f; }
         .alert-success { background-color: #d4edda; color: #155724; padding: 15px; border-radius: 5px; margin-bottom: 25px; border: 1px solid #c3e6cb; font-weight: bold; }
         .alert-error { background-color: #f8d7da; color: #721c24; padding: 15px; border-radius: 5px; margin-bottom: 25px; }
-        
-        /* Table Styles */
         .data-table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 10px rgba(0,0,0,0.05); margin-bottom: 40px; }
         .data-table th, .data-table td { padding: 14px 18px; text-align: left; border-bottom: 1px solid #eee; }
         .data-table th { background-color: #1a252f; color: white; font-weight: 600; }
@@ -100,7 +95,6 @@ $csrf_token = function_exists('generate_csrf_token')
         .status-confirmed { background-color: #28a745; }
         .status-cancelled { background-color: #dc3545; }
         .status-completed { background-color: #6c757d; }
-
         .select-status { padding: 6px 10px; border-radius: 4px; border: 1px solid #ccc; font-size: 14px; }
         .btn-update { background-color: #28a745; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-weight: bold; }
         .btn-update:hover { background-color: #218838; }
@@ -126,16 +120,16 @@ $csrf_token = function_exists('generate_csrf_token')
         <div class="alert-error"><?php echo htmlspecialchars($error_msg); ?></div>
     <?php endif; ?>
 
-    <!-- Section 1: Customer Rental Orders -->
+    <!-- Section: Customer Rental Orders -->
     <h2 class="header-title">Customer Rental Orders</h2>
     <?php if (!empty($rentals)): ?>
         <table class="data-table">
             <thead>
                 <tr>
-                    <th>Rental ID</th>
+                    <th>Booking ID</th>
                     <th>Customer</th>
                     <th>Vehicle</th>
-                    <th>Dates</th>
+                    <th>Rental Dates</th>
                     <th>Total Price</th>
                     <th>Status</th>
                     <th>Action</th>
@@ -181,18 +175,18 @@ $csrf_token = function_exists('generate_csrf_token')
         </table>
     <?php else: ?>
         <p style="background: #fff; padding: 20px; border-radius: 8px; color: #6c757d; margin-bottom: 40px;">
-            No customer rental requests currently found in the system.
+            No customer rental orders found.
         </p>
     <?php endif; ?>
 
-    <!-- Section 2: Managed Fleet Overview -->
-    <h2 class="header-title">Managed Vehicle Fleet</h2>
+    <!-- Section: Fleet Overview -->
+    <h2 class="header-title">Vehicle Fleet Overview</h2>
     <?php if (!empty($cars)): ?>
         <table class="data-table">
             <thead>
                 <tr>
                     <th>Car ID</th>
-                    <th>Vehicle Name</th>
+                    <th>Vehicle Details</th>
                     <th>Category</th>
                     <th>Daily Rate</th>
                     <th>Transmission</th>
@@ -217,7 +211,7 @@ $csrf_token = function_exists('generate_csrf_token')
         </table>
     <?php else: ?>
         <p style="background: #fff; padding: 20px; border-radius: 8px; color: #6c757d; margin-bottom: 40px;">
-            No vehicles currently registered in the database catalog.
+            No vehicles currently found in catalog.
         </p>
     <?php endif; ?>
 
