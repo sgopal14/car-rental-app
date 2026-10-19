@@ -30,6 +30,17 @@ try {
     die("Database connection failed: " . $e->getMessage());
 }
 
+if (!function_exists('log_audit_event')) {
+    function log_audit_event($pdo, $event, $user_email = null, $details = null) {
+        try {
+            $stmt = $pdo->prepare("INSERT INTO audit_logs (event, user_email, details) VALUES (?, ?, ?)");
+            $stmt->execute([$event, $user_email, $details]);
+        } catch (PDOException $e) {
+            // Fallback to Apache error log if the database write fails
+            error_log("Audit Log Failure: " . $e->getMessage());
+        }
+    }
+}
 // 4. Unified Anti-CSRF Token Helpers
 if (!function_exists('get_csrf_token')) {
     function get_csrf_token() {

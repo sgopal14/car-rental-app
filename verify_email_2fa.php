@@ -4,9 +4,7 @@ session_start();
 require_once 'db.php';
 
 $error_msg = '';
-$success_msg = '';
 
-// Require a pending 2FA login state
 if (!isset($_SESSION['pending_2fa_user_id'])) {
     header("Location: index.php");
     exit();
@@ -14,7 +12,6 @@ if (!isset($_SESSION['pending_2fa_user_id'])) {
 
 $pending_user_id = $_SESSION['pending_2fa_user_id'];
 
-// Safe CSRF verification check
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && function_exists('verify_csrf_token')) {
     verify_csrf_token();
 }
@@ -26,7 +23,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error_msg = "Please enter the 6-digit verification code sent to your email.";
     } else {
         try {
-            // Fetch user record and 2FA secrets
             $stmt = $pdo->prepare("SELECT * FROM users WHERE id = :id LIMIT 1");
             $stmt->execute([':id' => $pending_user_id]);
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -37,50 +33,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 exit();
             }
 
-            // Extract OTP details from schema
-            $stored_otp = $user['two_factor_code'] ?? $user['otp_code'] ?? $user['2fa_code'] ?? '';
-            $otp_expiry = $user['two_factor_expires_at'] ?? $user['otp_expires_at'] ?? $user['2fa_expires'] ?? null;
+            $stored_otp = $user['two_factor_code'] ?? $user['otp_code'] ?? '';
+            $otp_expiry = $user['two_factor_expires_at'] ?? $user['otp_expires_at'] ?? null;
 
             $is_valid = false;
 
-            // Check timing window if expiration is stored
             if ($otp_expiry && strtotime($otp_expiry) < time()) {
+                log_audit_event($pdo, '2FA_EXPIRED', $user['email'], 'Expired OTP entered');
                 $error_msg = "Verification code has expired. Please log in again to generate a new code.";
             } elseif (!empty($stored_otp) && hash_equals((string)$stored_otp, (string)$entered_code)) {
                 $is_valid = true;
             } else {
+                log_audit_event($pdo, '2FA_FAILED', $user['email'], 'Incorrect verification code entered');
                 $error_msg = "Invalid verification code. Please check your email and try again.";
             }
 
             if ($is_valid) {
-                // Clear 2FA pending state
                 unset($_SESSION['pending_2fa_user_id']);
 
-                // Reset OTP code in database to prevent reuse
                 try {
                     $clear_stmt = $pdo->prepare("UPDATE users SET two_factor_code = NULL, two_factor_expires_at = NULL WHERE id = :id");
                     $clear_stmt->execute([':id' => $user['id']]);
-                } catch (PDOException $e) {
-                    // Ignore schema column name mismatches
-                }
+                } catch (PDOException $e) {}
 
-                // Regenerate session ID for security
                 session_regenerate_id(true);
 
-                // Populate authenticated session variables
                 $_SESSION['user_id']   = $user['id'];
-                $_SESSION['user_name'] = $user['name'] ?? $user['username'] ?? 'User';
+                $_SESSION['user_name'] = $user['name'] ?? $user['email'];
                 
-                // Extract lowercased role
-                $role = strtolower(trim($user['role'] ?? $user['user_type'] ?? 'customer'));
+                $role = strtolower(trim($user['role'] ?? 'customer'));
+                if ($role === 'user') { $role = 'customer'; }
+                if (in_array($role, ['branch_agent', 'staff'], true)) { $role = 'agent'; }
+
                 $_SESSION['role']      = $role;
                 $_SESSION['user_role'] = $role;
 
-                // Priority Role Redirection Matrix (Admin checked FIRST)
+                log_audit_event($pdo, 'LOGIN_SUCCESS', $user['email'], 'Completed 2FA authentication');
+
                 if ($role === 'admin') {
                     header("Location: admin_dashboard.php");
                     exit();
-                } elseif (in_array($role, ['agent', 'branch_agent', 'staff'], true)) {
+                } elseif ($role === 'agent') {
                     header("Location: agent_dashboard.php");
                     exit();
                 } elseif ($role === 'fleet_manager') {
@@ -98,12 +91,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Generate CSRF token for form
-$csrf_token = function_exists('get_csrf_token') 
-    ? get_csrf_token() 
-    : (function_exists('generate_csrf_token') 
-        ? generate_csrf_token() 
-        : ($_SESSION['csrf_token'] ?? ($_SESSION['csrf_token'] = bin2hex(random_bytes(32)))));
+$csrf_token = get_csrf_token();
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -138,7 +126,6 @@ $csrf_token = function_exists('get_csrf_token')
 
     <form action="verify_email_2fa.php" method="POST">
         <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
-        <input type="hidden" name="token" value="<?php echo htmlspecialchars($csrf_token); ?>">
 
         <div class="form-group">
             <label for="otp_code">Security Verification Code</label>

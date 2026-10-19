@@ -8,20 +8,8 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit();
 }
 
-// 1. Unified CSRF Token Validation
-if (function_exists('verify_csrf_token')) {
-    verify_csrf_token();
-} else {
-    $posted_token  = $_POST['csrf_token'] ?? $_POST['token'] ?? '';
-    $session_token = $_SESSION['csrf_token'] ?? '';
+verify_csrf_token();
 
-    if (empty($posted_token) || empty($session_token) || !hash_equals($session_token, $posted_token)) {
-        http_response_code(403);
-        die("403 Forbidden: CSRF Token Validation Failed. <a href='user_dashboard.php'>Return to Catalog</a>");
-    }
-}
-
-// 2. Authentication Check
 if (!isset($_SESSION['user_id'])) {
     header("Location: index.php");
     exit();
@@ -37,34 +25,30 @@ if (!$car_id || empty($start_date) || empty($end_date)) {
 }
 
 try {
-    // 3. Retrieve vehicle details using SELECT * from cars
-    $stmt = $pdo->prepare("SELECT * FROM cars WHERE id = :id");
+    $stmt = $pdo->prepare("SELECT * FROM cars WHERE id = :id AND (LOWER(status) = 'available' OR status IS NULL)");
     $stmt->execute([':id' => $car_id]);
     $car = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$car) {
-        die("Selected vehicle not found. <a href='user_dashboard.php'>Return to Catalog</a>");
+        die("Selected vehicle is not currently available. <a href='user_dashboard.php'>Return to Catalog</a>");
     }
 
     $daily_rate = (float)(
-        $car['daily_rate'] ?? 
         $car['price_per_day'] ?? 
-        $car['rate'] ?? 
+        $car['daily_rate'] ?? 
         $car['price'] ?? 
         50.00
     );
 
-    // Calculate rental duration
     $d1   = new DateTime($start_date);
     $d2   = new DateTime($end_date);
     $days = $d1->diff($d2)->days;
-    if ($days <= 0) { 
-        $days = 1; 
-    }
+    if ($days <= 0) { $days = 1; }
 
     $total_price = $daily_rate * $days;
 
-    // 4. Insertion into rentals table
+    $pdo->beginTransaction();
+
     $insert = $pdo->prepare("
         INSERT INTO rentals (user_id, car_id, start_date, end_date, total_price, status) 
         VALUES (:user_id, :car_id, :start_date, :end_date, :total_price, 'confirmed')
@@ -78,10 +62,19 @@ try {
         ':total_price' => $total_price
     ]);
 
+    // Update car status to rented
+    $update_car = $pdo->prepare("UPDATE cars SET status = 'rented' WHERE id = ?");
+    $update_car->execute([$car_id]);
+
+    $pdo->commit();
+
+    log_audit_event($pdo, 'RENTAL_RESERVED', $_SESSION['user_name'] ?? "User #{$user_id}", "Reserved car #{$car_id} for {$days} days (Total: \${$total_price})");
+
     header("Location: user_dashboard.php?booking=success");
     exit();
 
 } catch (PDOException $e) {
+    if ($pdo->inTransaction()) { $pdo->rollBack(); }
     die("Reservation Failed! Database Error: " . htmlspecialchars($e->getMessage()));
 }
 ?>
