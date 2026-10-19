@@ -45,12 +45,12 @@ if (isset($_GET['export'])) {
         $output = fopen('php://output', 'w');
         fputcsv($output, ['Car ID', 'Vehicle Details', 'Daily Rate ($)', 'Status']);
         
-        $stmt =$pdo->query("SELECT * FROM cars ORDER BY id ASC");
-        while ($row =$stmt->fetch(PDO::FETCH_ASSOC)) {
-            $make  =$row['brand'] ?? $row['make'] ?? $row['title'] ?? 'Vehicle';
-            $model =$row['model'] ?? '';
-            $rate  =$row['price_per_day'] ?? $row['daily_rate'] ?? $row['price'] ?? 0;
-            fputcsv($output, [$row['id'], trim($make . ' ' .$model), $rate,$row['status'] ?? 'available']);
+        $stmt = $pdo->query("SELECT * FROM cars ORDER BY id ASC");
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $make  = $row['brand'] ?? $row['make'] ?? $row['title'] ?? 'Vehicle';
+            $model = $row['model'] ?? '';
+            $rate  = $row['price_per_day'] ?? $row['daily_rate'] ?? $row['price'] ?? 0;
+            fputcsv($output, [$row['id'], trim($make . ' ' . $model), $rate, $row['status'] ?? 'available']);
         }
         fclose($output);
         exit();
@@ -62,8 +62,8 @@ if (isset($_GET['export'])) {
         
         $sql = "SELECT id, user_id, start_date, end_date, total_price, status FROM {$rental_table} ORDER BY id DESC";
         $stmt = $pdo->query($sql);
-        while ($row =$stmt->fetch(PDO::FETCH_ASSOC)) {
-            fputcsv($output,$row);
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            fputcsv($output, $row);
         }
         fclose($output);
         exit();
@@ -72,43 +72,57 @@ if (isset($_GET['export'])) {
 
 // 3. Handle Admin Actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    $action =$_POST['action'];
+    $action = $_POST['action'];
 
     // USER MANAGEMENT: Update Role
-    if ($action === 'update_role') {$target_user_id = intval($_POST['user_id'] ?? 0);$new_role = $_POST['role'] ?? 'customer';$valid_roles = ['customer', 'admin', 'fleet_manager', 'branch_agent', 'agent', 'staff'];
+    if ($action === 'update_role') {
+        $target_user_id = intval($_POST['user_id'] ?? 0);
+        $new_role = $_POST['role'] ?? 'customer';
+        $valid_roles = ['customer', 'admin', 'fleet_manager', 'branch_agent', 'agent', 'staff'];
 
-        if (in_array($new_role,$valid_roles, true)) {
+        if (in_array($new_role, $valid_roles, true)) {
             try {
-                $stmt =$pdo->prepare("UPDATE users SET role = ? WHERE id = ?");
-                $stmt->execute([$new_role, $target_user_id]);$message = "User role updated successfully to " . strtoupper($new_role) . ".";
-            } catch (PDOException $e) {$error = "Failed to update user role: " . $e->getMessage();
+                $stmt = $pdo->prepare("UPDATE users SET role = ? WHERE id = ?");
+                $stmt->execute([$new_role, $target_user_id]);
+                $message = "User role updated successfully to " . strtoupper($new_role) . ".";
+            } catch (PDOException $e) {
+                $error = "Failed to update user role: " . $e->getMessage();
             }
         }
     }
     // USER MANAGEMENT: Delete User
     elseif ($action === 'delete_user') {
         $target_user_id = intval($_POST['user_id'] ?? 0);
-        if ($target_user_id === $_SESSION['user_id']) {$error = "You cannot delete your own active administrator account.";
+        if ($target_user_id === $_SESSION['user_id']) {
+            $error = "You cannot delete your own active administrator account.";
         } else {
             try {
-                $stmt =$pdo->prepare("DELETE FROM users WHERE id = ?");
-                $stmt->execute([$target_user_id]);$message = "User deleted successfully.";
-            } catch (PDOException $e) {$error = "Failed to delete user: " . $e->getMessage();
+                $stmt = $pdo->prepare("DELETE FROM users WHERE id = ?");
+                $stmt->execute([$target_user_id]);
+                $message = "User deleted successfully.";
+            } catch (PDOException $e) {
+                $error = "Failed to delete user: " . $e->getMessage();
             }
         }
     }
     // FLEET MANAGEMENT: Add Vehicle Asset
     elseif ($action === 'add_vehicle') {
-        $make = trim($_POST['brand'] ?? $_POST['make'] ?? '');$model = trim($_POST['model'] ?? '');$category = trim($_POST['category'] ?? 'Standard');$price = floatval($_POST['price_per_day'] ?? $_POST['daily_rate'] ?? 0);
+        $make = trim($_POST['brand'] ?? $_POST['make'] ?? '');
+        $model = trim($_POST['model'] ?? '');
+        $category = trim($_POST['category'] ?? 'Standard');
+        $price = floatval($_POST['price_per_day'] ?? $_POST['daily_rate'] ?? 0);
 
-        if (!empty($make) && !empty($model) &&$price > 0) {
+        if (!empty($make) && !empty($model) && $price > 0) {
             try {
-                $cols =$pdo->query("SHOW COLUMNS FROM cars")->fetchAll(PDO::FETCH_COLUMN);
-                $make_col = in_array('brand',$cols, true) ? 'brand' : (in_array('make', $cols, true) ? 'make' : 'brand');$price_col = in_array('price_per_day', $cols, true) ? 'price_per_day' : (in_array('daily_rate',$cols, true) ? 'daily_rate' : 'price');
+                $cols = $pdo->query("SHOW COLUMNS FROM cars")->fetchAll(PDO::FETCH_COLUMN);
+                $make_col = in_array('brand', $cols, true) ? 'brand' : (in_array('make', $cols, true) ? 'make' : 'brand');
+                $price_col = in_array('price_per_day', $cols, true) ? 'price_per_day' : (in_array('daily_rate', $cols, true) ? 'daily_rate' : 'price');
 
-                $stmt =$pdo->prepare("INSERT INTO cars ({$make_col}, model, category, {$price_col}, status) VALUES (?, ?, ?, ?, 'available')");
-                $stmt->execute([$make, $model,$category, $price]);$message = "Vehicle asset '{$make} {$model}' added to fleet successfully.";
-            } catch (PDOException $e) {$error = "Failed to add vehicle: " . $e->getMessage();
+                $stmt = $pdo->prepare("INSERT INTO cars ({$make_col}, model, category, {$price_col}, status) VALUES (?, ?, ?, ?, 'available')");
+                $stmt->execute([$make, $model, $category, $price]);
+                $message = "Vehicle asset '{$make} {$model}' added to fleet successfully.";
+            } catch (PDOException $e) {
+                $error = "Failed to add vehicle: " . $e->getMessage();
             }
         } else {
             $error = "Please fill in all vehicle details correctly.";
@@ -117,13 +131,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     // FLEET MANAGEMENT: Update Vehicle Status
     elseif ($action === 'update_car_status') {
         $car_id = intval($_POST['car_id'] ?? 0);
-        $status =$_POST['status'] ?? 'available';
+        $status = $_POST['status'] ?? 'available';
         if ($car_id > 0) {
             try {
-                $stmt =$pdo->prepare("UPDATE cars SET status = ? WHERE id = ?");
-                $stmt->execute([$status,$car_id]);
+                $stmt = $pdo->prepare("UPDATE cars SET status = ? WHERE id = ?");
+                $stmt->execute([$status, $car_id]);
                 $message = "Vehicle #{$car_id} status updated to " . strtoupper($status) . ".";
-            } catch (PDOException $e) {$error = "Failed to update vehicle status: " . $e->getMessage();
+            } catch (PDOException $e) {
+                $error = "Failed to update vehicle status: " . $e->getMessage();
             }
         }
     }
@@ -132,10 +147,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $car_id = intval($_POST['car_id'] ?? 0);
         if ($car_id > 0) {
             try {
-                $stmt =$pdo->prepare("DELETE FROM cars WHERE id = ?");
+                $stmt = $pdo->prepare("DELETE FROM cars WHERE id = ?");
                 $stmt->execute([$car_id]);
                 $message = "Vehicle #{$car_id} removed from fleet.";
-            } catch (PDOException $e) {$error = "Cannot delete vehicle associated with active bookings: " . $e->getMessage();
+            } catch (PDOException $e) {
+                $error = "Cannot delete vehicle associated with active bookings: " . $e->getMessage();
             }
         }
     }
@@ -143,23 +159,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     elseif ($action === 'process_booking_status') {
         $booking_id = intval($_POST['booking_id'] ?? 0);
         $car_id = intval($_POST['car_id'] ?? 0);
-        $target_status =$_POST['target_status'] ?? '';
+        $target_status = $_POST['target_status'] ?? '';
 
         if ($booking_id > 0) {
             try {
-                $pdo->beginTransaction();$b_stmt = $pdo->prepare("UPDATE {$rental_table} SET status = ? WHERE id = ?");
-                $b_stmt->execute([$target_status,$booking_id]);
+                $pdo->beginTransaction();
+                
+                $b_stmt = $pdo->prepare("UPDATE {$rental_table} SET status = ? WHERE id = ?");
+                $b_stmt->execute([$target_status, $booking_id]);
 
                 if ($car_id > 0) {
                     $car_new_status = ($target_status === 'confirmed') ? 'rented' : 'available';
-                    $c_stmt =$pdo->prepare("UPDATE cars SET status = ? WHERE id = ?");
-                    $c_stmt->execute([$car_new_status,$car_id]);
+                    $c_stmt = $pdo->prepare("UPDATE cars SET status = ? WHERE id = ?");
+                    $c_stmt->execute([$car_new_status, $car_id]);
                 }
 
                 $pdo->commit();
                 $message = "Transaction #{$booking_id} updated to " . strtoupper($target_status) . ".";
             } catch (Exception $e) {
-                if ($pdo->inTransaction()) { $pdo->rollBack(); }$error = "Failed to process booking transaction: " . $e->getMessage();
+                if ($pdo->inTransaction()) { $pdo->rollBack(); }
+                $error = "Failed to process booking transaction: " . $e->getMessage();
             }
         }
     }
@@ -167,7 +186,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
 // 4. Fetch All Comprehensive Admin Data Safely
 $total_users = 0; $total_cars = 0; $available_cars = 0; $maintenance_cars = 0; $total_revenue = 0.00;
-$users = [];$cars = []; $transactions = [];$audit_logs = [];
+$users = []; $cars = []; $transactions = []; $audit_logs = [];
 
 try {
     // Executive Metrics
@@ -178,13 +197,13 @@ try {
     $total_revenue = (float)$pdo->query("SELECT COALESCE(SUM(total_price), 0) FROM {$rental_table} WHERE status IN ('confirmed', 'completed', 'active')")->fetchColumn();
 
     // User Records
-    $users =$pdo->query("SELECT * FROM users ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC);
+    $users = $pdo->query("SELECT * FROM users ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC);
 
     // Fleet Records (Safe SELECT *)
-    $cars =$pdo->query("SELECT * FROM cars ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC);
+    $cars = $pdo->query("SELECT * FROM cars ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC);
 
     // Transaction Records (Queries rentals and users directly without column-name dependencies)
-    $transactions =$pdo->query("
+    $transactions = $pdo->query("
         SELECT r.*, u.email AS user_email, u.name AS user_name
         FROM {$rental_table} r
         LEFT JOIN users u ON r.user_id = u.id
@@ -192,10 +211,12 @@ try {
     ")->fetchAll(PDO::FETCH_ASSOC);
 
     // Fetch Security / Audit Logs if table exists
-    if ($has_logs_table) {$audit_logs = $pdo->query("SELECT * FROM {$log_table} ORDER BY id DESC LIMIT 50")->fetchAll(PDO::FETCH_ASSOC);
+    if ($has_logs_table) {
+        $audit_logs = $pdo->query("SELECT * FROM {$log_table} ORDER BY id DESC LIMIT 50")->fetchAll(PDO::FETCH_ASSOC);
     }
 
-} catch (PDOException $e) {$error = "Database Notification: " . $e->getMessage();
+} catch (PDOException $e) {
+    $error = "Database Notification: " . $e->getMessage();
 }
 
 $csrf_token = function_exists('get_csrf_token') ? get_csrf_token() : ($_SESSION['csrf_token'] ?? '');
@@ -317,9 +338,9 @@ $csrf_token = function_exists('get_csrf_token') ? get_csrf_token() : ($_SESSION[
                 </tr>
             </thead>
             <tbody>
-                <?php foreach ($users as$u): ?>
+                <?php foreach ($users as $u): ?>
                     <?php 
-                        $disp_name =$u['name'] ?? $u['username'] ?? $u['email'];
+                        $disp_name = $u['name'] ?? $u['username'] ?? $u['email'];
                         $role_name = strtolower($u['role'] ?? 'customer');
                     ?>
                     <tr>
@@ -346,7 +367,7 @@ $csrf_token = function_exists('get_csrf_token') ? get_csrf_token() : ($_SESSION[
                             </form>
                         </td>
                         <td>
-                            <?php if ($u['id'] !==$_SESSION['user_id']): ?>
+                            <?php if ($u['id'] !== $_SESSION['user_id']): ?>
                                 <form method="POST" onsubmit="return confirm('Delete this user account?');" style="display:inline;">
                                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
                                     <input type="hidden" name="action" value="delete_user">
@@ -412,16 +433,16 @@ $csrf_token = function_exists('get_csrf_token') ? get_csrf_token() : ($_SESSION[
                 </tr>
             </thead>
             <tbody>
-                <?php foreach ($cars as$car): ?>
+                <?php foreach ($cars as $car): ?>
                     <?php 
-                        $brand =$car['brand'] ?? $car['make'] ?? $car['title'] ?? 'Vehicle';
-                        $model =$car['model'] ?? '';
-                        $price =$car['price_per_day'] ?? $car['daily_rate'] ?? $car['price'] ?? 0.00;
+                        $brand = $car['brand'] ?? $car['make'] ?? $car['title'] ?? 'Vehicle';
+                        $model = $car['model'] ?? '';
+                        $price = $car['price_per_day'] ?? $car['daily_rate'] ?? $car['price'] ?? 0.00;
                         $status = strtolower($car['status'] ?? 'available');
                     ?>
                     <tr>
                         <td>#<?php echo $car['id']; ?></td>
-                        <td><strong><?php echo htmlspecialchars(trim($brand . ' ' .$model)); ?></strong></td>
+                        <td><strong><?php echo htmlspecialchars(trim($brand . ' ' . $model)); ?></strong></td>
                         <td><?php echo htmlspecialchars($car['category'] ?? $car['type'] ?? 'Standard'); ?></td>
                         <td>$<?php echo number_format((float)$price, 2); ?></td>
                         <td>
@@ -474,6 +495,79 @@ $csrf_token = function_exists('get_csrf_token') ? get_csrf_token() : ($_SESSION[
             </thead>
             <tbody>
                 <?php if (!empty($transactions)): ?>
-                    <?php foreach ($transactions as$tx): ?>
+                    <?php foreach ($transactions as $tx): ?>
                         <?php 
-                            $tx_status
+                            $tx_status = strtolower($tx['status'] ?? $tx['booking_status'] ?? 'confirmed');
+                            $cust_info = $tx['user_name'] ?? $tx['user_email'] ?? ('User #' . ($tx['user_id'] ?? ''));
+                        ?>
+                        <tr>
+                            <td><strong>#<?php echo $tx['id']; ?></strong></td>
+                            <td><strong><?php echo htmlspecialchars($cust_info); ?></strong></td>
+                            <td><?php echo htmlspecialchars(($tx['start_date'] ?? 'N/A') . ' to ' . ($tx['end_date'] ?? 'N/A')); ?></td>
+                            <td><strong>$<?php echo number_format((float)($tx['total_price'] ?? 0), 2); ?></strong></td>
+                            <td>
+                                <span class="badge badge-<?php echo htmlspecialchars($tx_status); ?>">
+                                    <?php echo htmlspecialchars(strtoupper($tx_status)); ?>
+                                </span>
+                            </td>
+                            <td>
+                                <form method="POST" style="display:inline;">
+                                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
+                                    <input type="hidden" name="action" value="process_booking_status">
+                                    <input type="hidden" name="booking_id" value="<?php echo $tx['id']; ?>">
+                                    <input type="hidden" name="car_id" value="<?php echo $tx['car_id'] ?? 0; ?>">
+                                    <select name="target_status" onchange="this.form.submit()">
+                                        <option value="confirmed" <?php if ($tx_status === 'confirmed') echo 'selected'; ?>>Confirmed</option>
+                                        <option value="completed" <?php if ($tx_status === 'completed') echo 'selected'; ?>>Completed</option>
+                                        <option value="cancelled" <?php if ($tx_status === 'cancelled') echo 'selected'; ?>>Cancelled</option>
+                                    </select>
+                                </form>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php else: ?>
+                    <tr><td colspan="6" style="text-align:center; color:#6c757d;">No customer rental records currently present in system.</td></tr>
+                <?php endif; ?>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- 5. Security & Audit Trails Module -->
+    <div class="card">
+        <div class="card-header">
+            <h2>System Audit Trails & Security Logs</h2>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Log ID</th>
+                    <th>Event Type / Activity</th>
+                    <th>User / Context</th>
+                    <th>Timestamp</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php if (!empty($audit_logs)): ?>
+                    <?php foreach ($audit_logs as $log): ?>
+                        <tr>
+                            <td>#<?php echo $log['id'] ?? 'N/A'; ?></td>
+                            <td><strong><?php echo htmlspecialchars($log['action'] ?? $log['event'] ?? $log['type'] ?? 'System Event'); ?></strong></td>
+                            <td><?php echo htmlspecialchars($log['user_email'] ?? $log['username'] ?? $log['details'] ?? 'N/A'); ?></td>
+                            <td><?php echo htmlspecialchars($log['created_at'] ?? $log['timestamp'] ?? 'N/A'); ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php else: ?>
+                    <tr>
+                        <td colspan="4" style="text-align:center; color:#6c757d;">
+                            <em>No explicit security events logged. Security events (e.g., login attempts, 2FA status, database queries) are monitored via Apache logs at <code>/var/log/apache2/error.log</code>.</em>
+                        </td>
+                    </tr>
+                <?php endif; ?>
+            </tbody>
+        </table>
+    </div>
+
+</div>
+
+</body>
+</html>
