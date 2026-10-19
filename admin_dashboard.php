@@ -8,7 +8,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && function_exists('verify_csrf_token'
     verify_csrf_token();
 }
 
-// 1. Session & Strict 4-Role Access Control Matrix
+// 1. Session & Access Control Matrix
 $allowed_admin_roles = ['admin', 'agent', 'fleet_manager'];
 $current_role = strtolower($_SESSION['role'] ?? $_SESSION['user_role'] ?? 'customer');
 
@@ -32,6 +32,8 @@ function table_exists($pdo, $table_name) {
 
 // Detect whether system uses 'rentals' or 'bookings' table
 $rental_table = table_exists($pdo, 'rentals') ? 'rentals' : 'bookings';
+$has_logs_table = table_exists($pdo, 'audit_logs') || table_exists($pdo, 'logs') || table_exists($pdo, 'security_logs');
+$log_table = table_exists($pdo, 'audit_logs') ? 'audit_logs' : (table_exists($pdo, 'logs') ? 'logs' : 'security_logs');
 
 // 2. Handle CSV Report Exports
 if (isset($_GET['export'])) {
@@ -72,15 +74,12 @@ if (isset($_GET['export'])) {
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     $action = $_POST['action'];
 
-    // USER MANAGEMENT: Update Role (Strictly limited to admin, fleet_manager, agent, customer)
+    // USER MANAGEMENT: Update Role
     if ($action === 'update_role') {
         $target_user_id = intval($_POST['user_id'] ?? 0);
         $new_role = strtolower(trim($_POST['role'] ?? 'customer'));
-
-        // Standardize inputs to exact target values
         $valid_roles = ['customer', 'agent', 'fleet_manager', 'admin'];
 
-        // Normalize legacy role aliases if present
         if ($new_role === 'user') { $new_role = 'customer'; }
         if (in_array($new_role, ['branch_agent', 'staff'], true)) { $new_role = 'agent'; }
 
@@ -92,7 +91,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     ':id'   => $target_user_id
                 ]);
 
-                // Live-update session variables if admin updates their own account
                 if ($target_user_id === $_SESSION['user_id']) {
                     $_SESSION['role']      = $new_role;
                     $_SESSION['user_role'] = $new_role;
@@ -200,9 +198,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     }
 }
 
-// 4. Fetch Admin Data
+// 4. Fetch Admin Data Safely
 $total_users = 0; $total_cars = 0; $available_cars = 0; $maintenance_cars = 0; $total_revenue = 0.00;
-$users = []; $cars = []; $transactions = [];
+$users = []; $cars = []; $transactions = []; $audit_logs = [];
 
 try {
     $total_users = (int)$pdo->query("SELECT COUNT(*) FROM users")->fetchColumn();
@@ -221,6 +219,10 @@ try {
         ORDER BY r.id DESC
     ")->fetchAll(PDO::FETCH_ASSOC);
 
+    if ($has_logs_table) {
+        $audit_logs = $pdo->query("SELECT * FROM {$log_table} ORDER BY id DESC LIMIT 100")->fetchAll(PDO::FETCH_ASSOC);
+    }
+
 } catch (PDOException $e) {
     $error = "Database Error: " . $e->getMessage();
 }
@@ -232,7 +234,7 @@ $csrf_token = function_exists('get_csrf_token') ? get_csrf_token() : ($_SESSION[
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DriveEase - Master Control Panel</title>
+    <title>DriveEase - Executive Master Control Panel</title>
     <style>
         * { box-sizing: border-box; }
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; margin: 0; padding: 0; color: #333; }
@@ -246,6 +248,15 @@ $csrf_token = function_exists('get_csrf_token') ? get_csrf_token() : ($_SESSION[
         .alert { padding: 12px 20px; border-radius: 4px; margin-bottom: 20px; font-weight: bold; }
         .alert-success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
         .alert-danger { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+
+        /* Navigation Tab Styles */
+        .tab-nav { display: flex; gap: 10px; margin-bottom: 25px; border-bottom: 3px solid #dee2e6; }
+        .tab-btn { background: #e9ecef; color: #495057; border: none; padding: 12px 20px; border-radius: 6px 6px 0 0; font-weight: bold; font-size: 14px; cursor: pointer; transition: all 0.2s ease; }
+        .tab-btn:hover { background: #ced4da; }
+        .tab-btn.active { background: #007bff; color: white; }
+
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
 
         .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin-bottom: 30px; }
         .stat-card { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); text-align: center; border-bottom: 4px solid #007bff; }
@@ -303,246 +314,311 @@ $csrf_token = function_exists('get_csrf_token') ? get_csrf_token() : ($_SESSION[
         <div class="alert alert-danger"><?php echo htmlspecialchars($error); ?></div>
     <?php endif; ?>
 
-    <!-- 1. Executive Key Performance Indicators -->
-    <div class="stats-grid">
-        <div class="stat-card">
-            <h3>Total Users</h3>
-            <div class="value"><?php echo number_format($total_users); ?></div>
-        </div>
-        <div class="stat-card cars">
-            <h3>Total Fleet Assets</h3>
-            <div class="value"><?php echo number_format($total_cars); ?></div>
-        </div>
-        <div class="stat-card">
-            <h3>Available Vehicles</h3>
-            <div class="value"><?php echo number_format($available_cars); ?></div>
-        </div>
-        <div class="stat-card maint">
-            <h3>In Maintenance</h3>
-            <div class="value"><?php echo number_format($maintenance_cars); ?></div>
-        </div>
-        <div class="stat-card rev">
-            <h3>Gross Revenue</h3>
-            <div class="value">$<?php echo number_format($total_revenue, 2); ?></div>
-        </div>
+    <!-- Navigation Tabs -->
+    <div class="tab-nav">
+        <button class="tab-btn active" onclick="switchTab('overview', this)">Overview & KPIs</button>
+        <button class="tab-btn" onclick="switchTab('users', this)">User Management</button>
+        <button class="tab-btn" onclick="switchTab('fleet', this)">Fleet Management</button>
+        <button class="tab-btn" onclick="switchTab('rentals', this)">Branch Rental Desk</button>
+        <button class="tab-btn" onclick="switchTab('audit', this)">Security & Audit Logs</button>
     </div>
 
-    <!-- 2. Strict 4-Role User Management Module -->
-    <div class="card">
-        <div class="card-header">
-            <h2>User Management & Privilege Control</h2>
-        </div>
-        <table>
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>User / Name</th>
-                    <th>Email Address</th>
-                    <th>Current Role</th>
-                    <th>Change Privilege</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php foreach ($users as $u): ?>
-                    <?php 
-                        $disp_name = $u['name'] ?? $u['username'] ?? $u['email'];
-                        $raw_role  = strtolower($u['role'] ?? 'customer');
-                        
-                        // Map legacy or variant strings strictly to the 4 system roles
-                        if ($raw_role === 'user') { $raw_role = 'customer'; }
-                        if (in_array($raw_role, ['branch_agent', 'staff'], true)) { $raw_role = 'agent'; }
-                    ?>
-                    <tr>
-                        <td>#<?php echo $u['id']; ?></td>
-                        <td><strong><?php echo htmlspecialchars($disp_name); ?></strong></td>
-                        <td><?php echo htmlspecialchars($u['email']); ?></td>
-                        <td>
-                            <span class="badge badge-<?php echo htmlspecialchars($raw_role); ?>">
-                                <?php echo htmlspecialchars(str_replace('_', ' ', strtoupper($raw_role))); ?>
-                            </span>
-                        </td>
-                        <td>
-                            <form method="POST" style="display: flex; gap: 5px;">
-                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
-                                <input type="hidden" name="action" value="update_role">
-                                <input type="hidden" name="user_id" value="<?php echo $u['id']; ?>">
-                                <select name="role">
-                                    <option value="customer" <?php if ($raw_role === 'customer') echo 'selected'; ?>>Customer</option>
-                                    <option value="agent" <?php if ($raw_role === 'agent') echo 'selected'; ?>>Agent</option>
-                                    <option value="fleet_manager" <?php if ($raw_role === 'fleet_manager') echo 'selected'; ?>>Fleet Manager</option>
-                                    <option value="admin" <?php if ($raw_role === 'admin') echo 'selected'; ?>>Admin</option>
-                                </select>
-                                <button type="submit" class="btn-action btn-update">Update</button>
-                            </form>
-                        </td>
-                        <td>
-                            <?php if ($u['id'] !== $_SESSION['user_id']): ?>
-                                <form method="POST" onsubmit="return confirm('Delete this user account?');" style="display:inline;">
-                                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
-                                    <input type="hidden" name="action" value="delete_user">
-                                    <input type="hidden" name="user_id" value="<?php echo $u['id']; ?>">
-                                    <button type="submit" class="btn-action btn-delete">Delete</button>
-                                </form>
-                            <?php else: ?>
-                                <em style="color:#6c757d;">(Active Session)</em>
-                            <?php endif; ?>
-                        </td>
-                    </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
-    </div>
-
-    <!-- 3. Fleet Asset Management Module -->
-    <div class="card">
-        <div class="card-header">
-            <h2>Fleet Asset Management - Add & Control Vehicles</h2>
-            <a href="admin_dashboard.php?export=fleet_csv" class="btn-export">Export Fleet CSV</a>
-        </div>
-
-        <form method="POST" style="margin-bottom: 20px;">
-            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
-            <input type="hidden" name="action" value="add_vehicle">
-            <div class="form-grid">
-                <div class="form-group">
-                    <label>Brand / Make</label>
-                    <input type="text" name="brand" placeholder="e.g., Toyota" required>
-                </div>
-                <div class="form-group">
-                    <label>Model</label>
-                    <input type="text" name="model" placeholder="e.g., RAV4" required>
-                </div>
-                <div class="form-group">
-                    <label>Category</label>
-                    <select name="category">
-                        <option value="SUV">SUV</option>
-                        <option value="Sedan">Sedan</option>
-                        <option value="Luxury">Luxury</option>
-                        <option value="Economy">Economy</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>Daily Rate ($)</label>
-                    <input type="number" step="0.01" name="price_per_day" placeholder="65.00" required>
-                </div>
+    <!-- TAB 1: EXECUTIVE OVERVIEW & KPIs -->
+    <div id="overview" class="tab-content active">
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h3>Total Users</h3>
+                <div class="value"><?php echo number_format($total_users); ?></div>
             </div>
-            <button type="submit" class="btn-submit">+ Add Vehicle Asset</button>
-        </form>
-
-        <table>
-            <thead>
-                <tr>
-                    <th>Asset ID</th>
-                    <th>Vehicle Details</th>
-                    <th>Category</th>
-                    <th>Daily Rate</th>
-                    <th>Status</th>
-                    <th>Status Control</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php foreach ($cars as $car): ?>
-                    <?php 
-                        $brand = $car['brand'] ?? $car['make'] ?? $car['title'] ?? 'Vehicle';
-                        $model = $car['model'] ?? '';
-                        $price = $car['price_per_day'] ?? $car['daily_rate'] ?? $car['price'] ?? 0.00;
-                        $status = strtolower($car['status'] ?? 'available');
-                    ?>
-                    <tr>
-                        <td>#<?php echo $car['id']; ?></td>
-                        <td><strong><?php echo htmlspecialchars(trim($brand . ' ' . $model)); ?></strong></td>
-                        <td><?php echo htmlspecialchars($car['category'] ?? $car['type'] ?? 'Standard'); ?></td>
-                        <td>$<?php echo number_format((float)$price, 2); ?></td>
-                        <td>
-                            <span class="badge badge-<?php echo htmlspecialchars($status); ?>">
-                                <?php echo htmlspecialchars(strtoupper($status)); ?>
-                            </span>
-                        </td>
-                        <td>
-                            <form method="POST" style="display:flex; gap:5px;">
-                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
-                                <input type="hidden" name="action" value="update_car_status">
-                                <input type="hidden" name="car_id" value="<?php echo $car['id']; ?>">
-                                <select name="status" onchange="this.form.submit()">
-                                    <option value="available" <?php if ($status === 'available') echo 'selected'; ?>>Available</option>
-                                    <option value="rented" <?php if ($status === 'rented') echo 'selected'; ?>>Rented</option>
-                                    <option value="maintenance" <?php if ($status === 'maintenance') echo 'selected'; ?>>Maintenance</option>
-                                </select>
-                            </form>
-                        </td>
-                        <td>
-                            <form method="POST" onsubmit="return confirm('Remove vehicle asset from fleet?');" style="display:inline;">
-                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
-                                <input type="hidden" name="action" value="delete_vehicle">
-                                <input type="hidden" name="car_id" value="<?php echo $car['id']; ?>">
-                                <button type="submit" class="btn-action btn-delete">Delete</button>
-                            </form>
-                        </td>
-                    </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
+            <div class="stat-card cars">
+                <h3>Total Fleet Assets</h3>
+                <div class="value"><?php echo number_format($total_cars); ?></div>
+            </div>
+            <div class="stat-card">
+                <h3>Available Vehicles</h3>
+                <div class="value"><?php echo number_format($available_cars); ?></div>
+            </div>
+            <div class="stat-card maint">
+                <h3>In Maintenance</h3>
+                <div class="value"><?php echo number_format($maintenance_cars); ?></div>
+            </div>
+            <div class="stat-card rev">
+                <h3>Gross Revenue</h3>
+                <div class="value">$<?php echo number_format($total_revenue, 2); ?></div>
+            </div>
+        </div>
     </div>
 
-    <!-- 4. Branch Operations Desk -->
-    <div class="card">
-        <div class="card-header">
-            <h2>Branch Operations & Rental Transaction Desk</h2>
-            <a href="admin_dashboard.php?export=sales_csv" class="btn-export">Export Sales CSV</a>
-        </div>
-        <table>
-            <thead>
-                <tr>
-                    <th>Tx ID</th>
-                    <th>Customer</th>
-                    <th>Rental Dates</th>
-                    <th>Total Price</th>
-                    <th>Status</th>
-                    <th>Status Control</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php if (!empty($transactions)): ?>
-                    <?php foreach ($transactions as $tx): ?>
+    <!-- TAB 2: USER MANAGEMENT -->
+    <div id="users" class="tab-content">
+        <div class="card">
+            <div class="card-header">
+                <h2>User Management & Privilege Control</h2>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>User / Name</th>
+                        <th>Email Address</th>
+                        <th>Current Role</th>
+                        <th>Change Privilege</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($users as $u): ?>
                         <?php 
-                            $tx_status = strtolower($tx['status'] ?? $tx['booking_status'] ?? 'confirmed');
-                            $cust_info = $tx['user_name'] ?? $tx['user_email'] ?? ('User #' . ($tx['user_id'] ?? ''));
+                            $disp_name = $u['name'] ?? $u['username'] ?? $u['email'];
+                            $raw_role  = strtolower($u['role'] ?? 'customer');
+                            if ($raw_role === 'user') { $raw_role = 'customer'; }
+                            if (in_array($raw_role, ['branch_agent', 'staff'], true)) { $raw_role = 'agent'; }
                         ?>
                         <tr>
-                            <td><strong>#<?php echo $tx['id']; ?></strong></td>
-                            <td><strong><?php echo htmlspecialchars($cust_info); ?></strong></td>
-                            <td><?php echo htmlspecialchars(($tx['start_date'] ?? 'N/A') . ' to ' . ($tx['end_date'] ?? 'N/A')); ?></td>
-                            <td><strong>$<?php echo number_format((float)($tx['total_price'] ?? 0), 2); ?></strong></td>
+                            <td>#<?php echo $u['id']; ?></td>
+                            <td><strong><?php echo htmlspecialchars($disp_name); ?></strong></td>
+                            <td><?php echo htmlspecialchars($u['email']); ?></td>
                             <td>
-                                <span class="badge badge-<?php echo htmlspecialchars($tx_status); ?>">
-                                    <?php echo htmlspecialchars(strtoupper($tx_status)); ?>
+                                <span class="badge badge-<?php echo htmlspecialchars($raw_role); ?>">
+                                    <?php echo htmlspecialchars(str_replace('_', ' ', strtoupper($raw_role))); ?>
                                 </span>
                             </td>
                             <td>
-                                <form method="POST" style="display:inline;">
+                                <form method="POST" style="display: flex; gap: 5px;">
                                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
-                                    <input type="hidden" name="action" value="process_booking_status">
-                                    <input type="hidden" name="booking_id" value="<?php echo $tx['id']; ?>">
-                                    <input type="hidden" name="car_id" value="<?php echo $tx['car_id'] ?? 0; ?>">
-                                    <select name="target_status" onchange="this.form.submit()">
-                                        <option value="confirmed" <?php if ($tx_status === 'confirmed') echo 'selected'; ?>>Confirmed</option>
-                                        <option value="completed" <?php if ($tx_status === 'completed') echo 'selected'; ?>>Completed</option>
-                                        <option value="cancelled" <?php if ($tx_status === 'cancelled') echo 'selected'; ?>>Cancelled</option>
+                                    <input type="hidden" name="action" value="update_role">
+                                    <input type="hidden" name="user_id" value="<?php echo $u['id']; ?>">
+                                    <select name="role">
+                                        <option value="customer" <?php if ($raw_role === 'customer') echo 'selected'; ?>>Customer</option>
+                                        <option value="agent" <?php if ($raw_role === 'agent') echo 'selected'; ?>>Agent</option>
+                                        <option value="fleet_manager" <?php if ($raw_role === 'fleet_manager') echo 'selected'; ?>>Fleet Manager</option>
+                                        <option value="admin" <?php if ($raw_role === 'admin') echo 'selected'; ?>>Admin</option>
                                     </select>
+                                    <button type="submit" class="btn-action btn-update">Update</button>
+                                </form>
+                            </td>
+                            <td>
+                                <?php if ($u['id'] !== $_SESSION['user_id']): ?>
+                                    <form method="POST" onsubmit="return confirm('Delete this user account?');" style="display:inline;">
+                                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
+                                        <input type="hidden" name="action" value="delete_user">
+                                        <input type="hidden" name="user_id" value="<?php echo $u['id']; ?>">
+                                        <button type="submit" class="btn-action btn-delete">Delete</button>
+                                    </form>
+                                <?php else: ?>
+                                    <em style="color:#6c757d;">(Active Session)</em>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- TAB 3: FLEET ASSET MANAGEMENT -->
+    <div id="fleet" class="tab-content">
+        <div class="card">
+            <div class="card-header">
+                <h2>Fleet Asset Management - Add & Control Vehicles</h2>
+                <a href="admin_dashboard.php?export=fleet_csv" class="btn-export">Export Fleet CSV</a>
+            </div>
+
+            <form method="POST" style="margin-bottom: 20px;">
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
+                <input type="hidden" name="action" value="add_vehicle">
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>Brand / Make</label>
+                        <input type="text" name="brand" placeholder="e.g., Toyota" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Model</label>
+                        <input type="text" name="model" placeholder="e.g., RAV4" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Category</label>
+                        <select name="category">
+                            <option value="SUV">SUV</option>
+                            <option value="Sedan">Sedan</option>
+                            <option value="Luxury">Luxury</option>
+                            <option value="Economy">Economy</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Daily Rate ($)</label>
+                        <input type="number" step="0.01" name="price_per_day" placeholder="65.00" required>
+                    </div>
+                </div>
+                <button type="submit" class="btn-submit">+ Add Vehicle Asset</button>
+            </form>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Asset ID</th>
+                        <th>Vehicle Details</th>
+                        <th>Category</th>
+                        <th>Daily Rate</th>
+                        <th>Status</th>
+                        <th>Status Control</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($cars as $car): ?>
+                        <?php 
+                            $brand = $car['brand'] ?? $car['make'] ?? $car['title'] ?? 'Vehicle';
+                            $model = $car['model'] ?? '';
+                            $price = $car['price_per_day'] ?? $car['daily_rate'] ?? $car['price'] ?? 0.00;
+                            $status = strtolower($car['status'] ?? 'available');
+                        ?>
+                        <tr>
+                            <td>#<?php echo $car['id']; ?></td>
+                            <td><strong><?php echo htmlspecialchars(trim($brand . ' ' . $model)); ?></strong></td>
+                            <td><?php echo htmlspecialchars($car['category'] ?? $car['type'] ?? 'Standard'); ?></td>
+                            <td>$<?php echo number_format((float)$price, 2); ?></td>
+                            <td>
+                                <span class="badge badge-<?php echo htmlspecialchars($status); ?>">
+                                    <?php echo htmlspecialchars(strtoupper($status)); ?>
+                                </span>
+                            </td>
+                            <td>
+                                <form method="POST" style="display:flex; gap:5px;">
+                                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
+                                    <input type="hidden" name="action" value="update_car_status">
+                                    <input type="hidden" name="car_id" value="<?php echo $car['id']; ?>">
+                                    <select name="status" onchange="this.form.submit()">
+                                        <option value="available" <?php if ($status === 'available') echo 'selected'; ?>>Available</option>
+                                        <option value="rented" <?php if ($status === 'rented') echo 'selected'; ?>>Rented</option>
+                                        <option value="maintenance" <?php if ($status === 'maintenance') echo 'selected'; ?>>Maintenance</option>
+                                    </select>
+                                </form>
+                            </td>
+                            <td>
+                                <form method="POST" onsubmit="return confirm('Remove vehicle asset from fleet?');" style="display:inline;">
+                                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
+                                    <input type="hidden" name="action" value="delete_vehicle">
+                                    <input type="hidden" name="car_id" value="<?php echo $car['id']; ?>">
+                                    <button type="submit" class="btn-action btn-delete">Delete</button>
                                 </form>
                             </td>
                         </tr>
                     <?php endforeach; ?>
-                <?php else: ?>
-                    <tr><td colspan="6" style="text-align:center; color:#6c757d;">No customer rental records currently present.</td></tr>
-                <?php endif; ?>
-            </tbody>
-        </table>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- TAB 4: BRANCH OPERATIONS & RENTAL DESK -->
+    <div id="rentals" class="tab-content">
+        <div class="card">
+            <div class="card-header">
+                <h2>Branch Operations & Rental Transaction Desk</h2>
+                <a href="admin_dashboard.php?export=sales_csv" class="btn-export">Export Sales CSV</a>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Tx ID</th>
+                        <th>Customer</th>
+                        <th>Rental Dates</th>
+                        <th>Total Price</th>
+                        <th>Status</th>
+                        <th>Status Control</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php if (!empty($transactions)): ?>
+                        <?php foreach ($transactions as $tx): ?>
+                            <?php 
+                                $tx_status = strtolower($tx['status'] ?? $tx['booking_status'] ?? 'confirmed');
+                                $cust_info = $tx['user_name'] ?? $tx['user_email'] ?? ('User #' . ($tx['user_id'] ?? ''));
+                            ?>
+                            <tr>
+                                <td><strong>#<?php echo $tx['id']; ?></strong></td>
+                                <td><strong><?php echo htmlspecialchars($cust_info); ?></strong></td>
+                                <td><?php echo htmlspecialchars(($tx['start_date'] ?? 'N/A') . ' to ' . ($tx['end_date'] ?? 'N/A')); ?></td>
+                                <td><strong>$<?php echo number_format((float)($tx['total_price'] ?? 0), 2); ?></strong></td>
+                                <td>
+                                    <span class="badge badge-<?php echo htmlspecialchars($tx_status); ?>">
+                                        <?php echo htmlspecialchars(strtoupper($tx_status)); ?>
+                                    </span>
+                                </td>
+                                <td>
+                                    <form method="POST" style="display:inline;">
+                                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
+                                        <input type="hidden" name="action" value="process_booking_status">
+                                        <input type="hidden" name="booking_id" value="<?php echo $tx['id']; ?>">
+                                        <input type="hidden" name="car_id" value="<?php echo $tx['car_id'] ?? 0; ?>">
+                                        <select name="target_status" onchange="this.form.submit()">
+                                            <option value="confirmed" <?php if ($tx_status === 'confirmed') echo 'selected'; ?>>Confirmed</option>
+                                            <option value="completed" <?php if ($tx_status === 'completed') echo 'selected'; ?>>Completed</option>
+                                            <option value="cancelled" <?php if ($tx_status === 'cancelled') echo 'selected'; ?>>Cancelled</option>
+                                        </select>
+                                    </form>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php else: ?>
+                        <tr><td colspan="6" style="text-align:center; color:#6c757d;">No customer rental records currently present.</td></tr>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- TAB 5: SECURITY & AUDIT TRAIL LOGS -->
+    <div id="audit" class="tab-content">
+        <div class="card">
+            <div class="card-header">
+                <h2>System Security & Audit Trail Logs</h2>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Log ID</th>
+                        <th>Event / Action</th>
+                        <th>User Context</th>
+                        <th>Timestamp</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php if (!empty($audit_logs)): ?>
+                        <?php foreach ($audit_logs as $log): ?>
+                            <tr>
+                                <td>#<?php echo $log['id'] ?? 'N/A'; ?></td>
+                                <td><strong><?php echo htmlspecialchars($log['action'] ?? $log['event'] ?? $log['type'] ?? 'System Event'); ?></strong></td>
+                                <td><?php echo htmlspecialchars($log['user_email'] ?? $log['username'] ?? $log['details'] ?? 'N/A'); ?></td>
+                                <td><?php echo htmlspecialchars($log['created_at'] ?? $log['timestamp'] ?? 'N/A'); ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php else: ?>
+                        <tr>
+                            <td colspan="4" style="text-align:center; color:#6c757d; padding: 30px;">
+                                <em>No database audit records present. Security events (e.g., login attempts, 2FA failures, SQL queries) are logged in the Apache server log at <code>/var/log/apache2/error.log</code>.</em>
+                            </td>
+                        </tr>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
     </div>
 
 </div>
+
+<script>
+function switchTab(tabId, element) {
+    const contents = document.querySelectorAll('.tab-content');
+    contents.forEach(content => content.classList.remove('active'));
+
+    const buttons = document.querySelectorAll('.tab-btn');
+    buttons.forEach(btn => btn.classList.remove('active'));
+
+    document.getElementById(tabId).classList.add('active');
+    element.classList.add('active');
+}
+</script>
 
 </body>
 </html>
