@@ -30,12 +30,9 @@ try {
     $stmt->execute();
     $cars = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    // 2. Fetch active rentals for the logged-in user
+    // 2. Fetch active rentals for the logged-in user without hardcoding c.make
     $rental_query = "
-        SELECT r.*, 
-               COALESCE(c.make, c.brand, 'Vehicle') AS make, 
-               COALESCE(c.model, '') AS model,
-               COALESCE(c.category, 'Standard') AS category
+        SELECT r.*, c.*
         FROM rentals r
         LEFT JOIN cars c ON r.car_id = c.id
         WHERE r.user_id = :user_id
@@ -119,9 +116,13 @@ try {
             </thead>
             <tbody>
                 <?php foreach ($my_rentals as $rental): ?>
+                    <?php 
+                        $vehicle_make = $rental['make'] ?? $rental['car_make'] ?? $rental['brand'] ?? $rental['title'] ?? 'Vehicle';
+                        $vehicle_model = $rental['model'] ?? $rental['car_model'] ?? '';
+                    ?>
                     <tr>
-                        <td><strong><?php echo htmlspecialchars(($rental['make'] ?? 'Vehicle') . ' ' . ($rental['model'] ?? '')); ?></strong></td>
-                        <td><?php echo htmlspecialchars($rental['category'] ?? 'Standard'); ?></td>
+                        <td><strong><?php echo htmlspecialchars(trim($vehicle_make . ' ' . $vehicle_model)); ?></strong></td>
+                        <td><?php echo htmlspecialchars($rental['category'] ?? $rental['type'] ?? 'Standard'); ?></td>
                         <td><?php echo htmlspecialchars($rental['start_date']); ?></td>
                         <td><?php echo htmlspecialchars($rental['end_date']); ?></td>
                         <td>$<?php echo htmlspecialchars(number_format((float)$rental['total_price'], 2)); ?></td>
@@ -142,13 +143,13 @@ try {
         <?php if (!empty($cars)): ?>
             <?php foreach ($cars as $car): ?>
                 <?php 
-                    $make = $car['make'] ?? $car['car_make'] ?? $car['brand'] ?? 'Vehicle';
+                    $make = $car['make'] ?? $car['car_make'] ?? $car['brand'] ?? $car['title'] ?? 'Vehicle';
                     $model = $car['model'] ?? $car['car_model'] ?? '';
                     $price = $car['daily_rate'] ?? $car['price_per_day'] ?? $car['price'] ?? '0.00';
                 ?>
                 <div class="card">
                     <div class="card-body">
-                        <div class="card-title"><?php echo htmlspecialchars($make . ' ' . $model); ?></div>
+                        <div class="card-title"><?php echo htmlspecialchars(trim($make . ' ' . $model)); ?></div>
                         
                         <div class="card-details">
                             <strong>Category:</strong> <?php echo htmlspecialchars($car['category'] ?? $car['type'] ?? 'Standard'); ?><br>
