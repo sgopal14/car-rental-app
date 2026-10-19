@@ -1,4 +1,5 @@
 <?php
+ob_start();
 session_start();
 require_once 'db.php';
 
@@ -7,7 +8,7 @@ $success_msg = '';
 
 // Require a pending 2FA login state
 if (!isset($_SESSION['pending_2fa_user_id'])) {
-    header("Location: login.php");
+    header("Location: index.php");
     exit();
 }
 
@@ -32,7 +33,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if (!$user) {
                 unset($_SESSION['pending_2fa_user_id']);
-                header("Location: login.php");
+                header("Location: index.php");
                 exit();
             }
 
@@ -60,23 +61,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $clear_stmt = $pdo->prepare("UPDATE users SET two_factor_code = NULL, two_factor_expires_at = NULL WHERE id = :id");
                     $clear_stmt->execute([':id' => $user['id']]);
                 } catch (PDOException $e) {
-                    // Ignore schema column name mismatches when clearing OTP
+                    // Ignore schema column name mismatches
                 }
 
                 // Regenerate session ID for security
                 session_regenerate_id(true);
 
                 // Populate authenticated session variables
-                $_SESSION['user_id'] = $user['id'];
-                $_SESSION['user_name'] = $user['username'] ?? $user['name'] ?? 'User';
+                $_SESSION['user_id']   = $user['id'];
+                $_SESSION['user_name'] = $user['name'] ?? $user['username'] ?? 'User';
                 
-                // Extract lowercased role with default fallback
+                // Extract lowercased role
                 $role = strtolower(trim($user['role'] ?? $user['user_type'] ?? 'customer'));
-                $_SESSION['role'] = $role;
+                $_SESSION['role']      = $role;
+                $_SESSION['user_role'] = $role;
 
-                // Dynamic Role Redirection to Agent or Customer Dashboard
-                if (in_array($role, ['agent', 'admin', 'staff'])) {
+                // Priority Role Redirection Matrix (Admin checked FIRST)
+                if ($role === 'admin') {
+                    header("Location: admin_dashboard.php");
+                    exit();
+                } elseif (in_array($role, ['agent', 'branch_agent', 'staff'], true)) {
                     header("Location: agent_dashboard.php");
+                    exit();
+                } elseif ($role === 'fleet_manager') {
+                    header("Location: fleet_dashboard.php");
                     exit();
                 } else {
                     header("Location: user_dashboard.php");
@@ -91,9 +99,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // Generate CSRF token for form
-$csrf_token = function_exists('generate_csrf_token') 
-    ? generate_csrf_token() 
-    : ($_SESSION['csrf_token'] ?? ($_SESSION['csrf_token'] = bin2hex(random_bytes(32))));
+$csrf_token = function_exists('get_csrf_token') 
+    ? get_csrf_token() 
+    : (function_exists('generate_csrf_token') 
+        ? generate_csrf_token() 
+        : ($_SESSION['csrf_token'] ?? ($_SESSION['csrf_token'] = bin2hex(random_bytes(32)))));
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -123,7 +133,7 @@ $csrf_token = function_exists('generate_csrf_token')
     <p>Please enter the 6-digit security code sent to your registered email address to complete sign in.</p>
 
     <?php if (!empty($error_msg)): ?>
-        <div class="alert-error"><?php echo $error_msg; ?></div>
+        <div class="alert-error"><?php echo htmlspecialchars($error_msg); ?></div>
     <?php endif; ?>
 
     <form action="verify_email_2fa.php" method="POST">
@@ -138,7 +148,7 @@ $csrf_token = function_exists('generate_csrf_token')
         <button type="submit" class="btn-submit">Verify & Sign In</button>
     </form>
 
-    <a href="login.php" class="back-link">&larr; Return to Login</a>
+    <a href="index.php" class="back-link">&larr; Return to Sign In</a>
 </div>
 
 </body>
