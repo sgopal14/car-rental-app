@@ -14,7 +14,7 @@ if (!isset($_SESSION['user_id'])) {
     exit();
 }
 
-// Extract role and prevent administrative users from accidentally landing on customer dashboard
+// Extract role and prevent administrative users from landing on customer dashboard
 $user_role = strtolower($_SESSION['role'] ?? $_SESSION['user_role'] ?? 'customer');
 
 if (in_array($user_role, ['admin', 'agent', 'branch_agent', 'fleet_manager', 'staff'], true)) {
@@ -28,19 +28,19 @@ if (in_array($user_role, ['admin', 'agent', 'branch_agent', 'fleet_manager', 'st
     exit();
 }
 
-$user_id   = $_SESSION['user_id'];
-$user_name = $_SESSION['user_name'] ?? 'Valued Customer';
-$cars      = [];
+$user_id    = $_SESSION['user_id'];
+$user_name  = $_SESSION['user_name'] ?? 'Valued Customer';
+$cars       = [];
 $my_rentals = [];
-$error_msg = '';
+$error_msg  = '';
 
 try {
-    // 1. Fetch available fleet safely from cars table
-    $stmt = $pdo->prepare("SELECT * FROM cars");
+    // 1. Fetch ONLY vehicles that are currently available to rent
+    $stmt = $pdo->prepare("SELECT * FROM cars WHERE LOWER(status) = 'available' OR status IS NULL ORDER BY id ASC");
     $stmt->execute();
     $cars = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    // 2. Fetch active rentals for the logged-in user
+    // 2. Fetch ONLY the logged-in user's past and current rental records
     $rental_query = "
         SELECT r.*, c.*
         FROM rentals r
@@ -76,7 +76,12 @@ try {
         .rentals-table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 10px rgba(0,0,0,0.05); margin-bottom: 40px; }
         .rentals-table th, .rentals-table td { padding: 14px 18px; text-align: left; border-bottom: 1px solid #eee; }
         .rentals-table th { background-color: #1a252f; color: white; font-weight: 600; }
-        .status-badge { background-color: #28a745; color: white; padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: bold; text-transform: uppercase; }
+        
+        .status-badge { padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: bold; text-transform: uppercase; }
+        .status-confirmed, .status-active { background-color: #28a745; color: white; }
+        .status-completed { background-color: #007bff; color: white; }
+        .status-cancelled { background-color: #dc3545; color: white; }
+
         .catalog-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 25px; }
         .card { background: #fff; border-radius: 10px; overflow: hidden; border-top: 4px solid #007bff; box-shadow: 0 4px 10px rgba(0,0,0,0.08); }
         .card-body { padding: 25px; }
@@ -84,6 +89,7 @@ try {
         .card-details { font-size: 14px; color: #6c757d; margin-bottom: 20px; line-height: 1.6; }
         .card-price { font-size: 18px; font-weight: bold; color: #28a745; margin-bottom: 20px; }
         .btn-rent { display: block; width: 100%; padding: 12px; text-align: center; background-color: #007bff; color: white; text-decoration: none; border-radius: 5px; font-weight: bold; }
+        .btn-rent:hover { background-color: #0056b3; }
     </style>
 </head>
 <body>
@@ -106,12 +112,13 @@ try {
         <div class="alert-error"><?php echo htmlspecialchars($error_msg); ?></div>
     <?php endif; ?>
 
-    <!-- Section: My Reserved Vehicles -->
+    <!-- Section: Personal Reservation History -->
     <h2 class="header-title">My Rented Vehicles</h2>
     <?php if (!empty($my_rentals)): ?>
         <table class="rentals-table">
             <thead>
                 <tr>
+                    <th>Tx ID</th>
                     <th>Vehicle</th>
                     <th>Category</th>
                     <th>Start Date</th>
@@ -123,16 +130,22 @@ try {
             <tbody>
                 <?php foreach ($my_rentals as $rental): ?>
                     <?php 
-                        $vehicle_make  = $rental['make'] ?? $rental['car_make'] ?? $rental['brand'] ?? $rental['title'] ?? 'Vehicle';
+                        $vehicle_make  = $rental['brand'] ?? $rental['make'] ?? $rental['car_make'] ?? $rental['title'] ?? 'Vehicle';
                         $vehicle_model = $rental['model'] ?? $rental['car_model'] ?? '';
+                        $status_class  = strtolower($rental['status'] ?? 'confirmed');
                     ?>
                     <tr>
+                        <td>#<?php echo htmlspecialchars($rental['id']); ?></td>
                         <td><strong><?php echo htmlspecialchars(trim($vehicle_make . ' ' . $vehicle_model)); ?></strong></td>
                         <td><?php echo htmlspecialchars($rental['category'] ?? $rental['type'] ?? 'Standard'); ?></td>
-                        <td><?php echo htmlspecialchars($rental['start_date']); ?></td>
-                        <td><?php echo htmlspecialchars($rental['end_date']); ?></td>
+                        <td><?php echo htmlspecialchars($rental['start_date'] ?? 'N/A'); ?></td>
+                        <td><?php echo htmlspecialchars($rental['end_date'] ?? 'N/A'); ?></td>
                         <td>$<?php echo htmlspecialchars(number_format((float)($rental['total_price'] ?? 0), 2)); ?></td>
-                        <td><span class="status-badge"><?php echo htmlspecialchars($rental['status'] ?? 'Confirmed'); ?></span></td>
+                        <td>
+                            <span class="status-badge status-<?php echo htmlspecialchars($status_class); ?>">
+                                <?php echo htmlspecialchars(strtoupper($status_class)); ?>
+                            </span>
+                        </td>
                     </tr>
                 <?php endforeach; ?>
             </tbody>
@@ -149,9 +162,9 @@ try {
         <?php if (!empty($cars)): ?>
             <?php foreach ($cars as $car): ?>
                 <?php 
-                    $make  = $car['make'] ?? $car['car_make'] ?? $car['brand'] ?? $car['title'] ?? 'Vehicle';
+                    $make  = $car['brand'] ?? $car['make'] ?? $car['car_make'] ?? $car['title'] ?? 'Vehicle';
                     $model = $car['model'] ?? $car['car_model'] ?? '';
-                    $price = $car['daily_rate'] ?? $car['price_per_day'] ?? $car['price'] ?? '0.00';
+                    $price = $car['price_per_day'] ?? $car['daily_rate'] ?? $car['price'] ?? '0.00';
                 ?>
                 <div class="card">
                     <div class="card-body">
@@ -171,7 +184,9 @@ try {
                 </div>
             <?php endforeach; ?>
         <?php else: ?>
-            <p style="text-align: center; grid-column: 1 / -1; color: #6c757d;">No vehicles currently available in the catalog.</p>
+            <p style="text-align: center; grid-column: 1 / -1; color: #6c757d; background: #fff; padding: 30px; border-radius: 8px;">
+                No vehicles are currently available for rent.
+            </p>
         <?php endif; ?>
     </div>
 </div>
