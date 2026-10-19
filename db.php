@@ -10,7 +10,7 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-// 3. Database Connection (Fetched securely from Apache environment variables)
+// 3. Database Connection
 $host    = getenv('DB_HOST') ?: 'localhost'; 
 $db      = getenv('DB_NAME') ?: 'car_rental';
 $user    = getenv('DB_USER') ?: 'dbadmin';
@@ -30,76 +30,83 @@ try {
     die("Database connection failed: " . $e->getMessage());
 }
 
-// 4. Anti-CSRF Token Helpers
-function get_csrf_token() {
-    if (empty($_SESSION['csrf_token'])) {
-        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+// 4. Unified Anti-CSRF Token Helpers
+if (!function_exists('get_csrf_token')) {
+    function get_csrf_token() {
+        if (empty($_SESSION['csrf_token'])) {
+            $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+        }
+        return $_SESSION['csrf_token'];
     }
-    return $_SESSION['csrf_token'];
 }
 
-function verify_csrf_token() {
-    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-        $submitted_token = $_POST['csrf_token'] ?? '';
-        $session_token = $_SESSION['csrf_token'] ?? '';
+if (!function_exists('generate_csrf_token')) {
+    function generate_csrf_token() {
+        return get_csrf_token();
+    }
+}
 
-        if (empty($submitted_token) || !hash_equals($session_token, $submitted_token)) {
-            http_response_code(403);
-            die("<h2 style='color:red; text-align:center;'>403 Forbidden: CSRF Token Validation Failed</h2>");
+if (!function_exists('verify_csrf_token')) {
+    function verify_csrf_token() {
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            $submitted_token = $_POST['csrf_token'] ?? $_POST['token'] ?? '';
+            $session_token = $_SESSION['csrf_token'] ?? '';
+
+            if (empty($submitted_token) || !hash_equals($session_token, $submitted_token)) {
+                http_response_code(403);
+                die("<h2 style='color:red; text-align:center;'>403 Forbidden: CSRF Token Validation Failed</h2>");
+            }
         }
     }
 }
 
-// 5. Centralized Email 2FA Helper (Using Environment Variables)
+// 5. Centralized Email 2FA Helper
 require_once __DIR__ . '/vendor/autoload.php';
 
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
-function send_2fa_email($recipient_email, $recipient_name, $code) {
-    // Read SMTP secrets from Apache environment variables
-    $smtp_host = getenv('SMTP_HOST') ?: 'smtp.gmail.com';
-    $smtp_user = getenv('SMTP_USER') ?: '';
-    $smtp_pass = getenv('SMTP_PASS') ?: '';
+if (!function_exists('send_2fa_email')) {
+    function send_2fa_email($recipient_email, $recipient_name, $code) {
+        $smtp_host = getenv('SMTP_HOST') ?: 'smtp.gmail.com';
+        $smtp_user = getenv('SMTP_USER') ?: '';
+        $smtp_pass = getenv('SMTP_PASS') ?: '';
 
-    // Route all codes for testing/dummy accounts directly to the master SMTP email
-    $master_testing_email = $smtp_user;
+        $master_testing_email = $smtp_user ?: $recipient_email;
 
-    $mail = new PHPMailer(true);
+        $mail = new PHPMailer(true);
 
-    try {
-        // SMTP Configuration
-        $mail->isSMTP();
-        $mail->Host       = $smtp_host; 
-        $mail->SMTPAuth   = true;
-        $mail->Username   = $smtp_user;
-        $mail->Password   = $smtp_pass;
-        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-        $mail->Port       = 587;
+        try {
+            $mail->isSMTP();
+            $mail->Host       = $smtp_host; 
+            $mail->SMTPAuth   = true;
+            $mail->Username   = $smtp_user;
+            $mail->Password   = $smtp_pass;
+            $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+            $mail->Port       = 587;
 
-        // Deliver directly to the master inbox while preserving destination account context
-        $mail->setFrom('no-reply@driveease.com', 'DriveEase Security');
-        $mail->addAddress($master_testing_email, 'DriveEase Tester');
+            $mail->setFrom('no-reply@driveease.com', 'DriveEase Security');
+            $mail->addAddress($master_testing_email, $recipient_name);
 
-        // Email Content
-        $mail->isHTML(true);
-        $mail->Subject = "2FA Code for {$recipient_name} ({$recipient_email})";
-        $mail->Body    = "
-            <div style='font-family: Arial, sans-serif; padding: 20px; background-color: #f4f6f9;'>
-                <div style='background-color: #ffffff; padding: 20px; border-radius: 8px; max-width: 480px; margin: auto;'>
-                    <h2 style='color: #007bff; text-align: center;'>DriveEase Security Verification</h2>
-                    <p>Login attempt for account: <strong>" . htmlspecialchars($recipient_email) . "</strong> (" . htmlspecialchars($recipient_name) . ")</p>
-                    <p>Your one-time 2FA login verification code is:</p>
-                    <h1 style='background-color: #e9ecef; padding: 12px; text-align: center; letter-spacing: 6px; color: #1a252f; border-radius: 5px;'>" . $code . "</h1>
-                    <p style='color: #6c757d; font-size: 13px;'>This code is valid for <strong>10 minutes</strong>.</p>
-                </div>
-            </div>";
+            $mail->isHTML(true);
+            $mail->Subject = "2FA Code for {$recipient_name} ({$recipient_email})";
+            $mail->Body    = "
+                <div style='font-family: Arial, sans-serif; padding: 20px; background-color: #f4f6f9;'>
+                    <div style='background-color: #ffffff; padding: 20px; border-radius: 8px; max-width: 480px; margin: auto;'>
+                        <h2 style='color: #007bff; text-align: center;'>DriveEase Security Verification</h2>
+                        <p>Login attempt for account: <strong>" . htmlspecialchars($recipient_email) . "</strong> (" . htmlspecialchars($recipient_name) . ")</p>
+                        <p>Your one-time 2FA login verification code is:</p>
+                        <h1 style='background-color: #e9ecef; padding: 12px; text-align: center; letter-spacing: 6px; color: #1a252f; border-radius: 5px;'>" . $code . "</h1>
+                        <p style='color: #6c757d; font-size: 13px;'>This code is valid for <strong>10 minutes</strong>.</p>
+                    </div>
+                </div>";
 
-        $mail->send();
-        return true;
-    } catch (Exception $e) {
-        error_log("PHPMailer Error: " . $mail->ErrorInfo);
-        return false;
+            $mail->send();
+            return true;
+        } catch (Exception $e) {
+            error_log("PHPMailer Error: " . $mail->ErrorInfo);
+            return false;
+        }
     }
 }
 ?>

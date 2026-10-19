@@ -1,4 +1,5 @@
 <?php
+ob_start();
 session_start();
 require_once 'db.php';
 
@@ -7,20 +8,29 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET' && function_exists('verify_csrf_token')
     verify_csrf_token();
 }
 
-// Authenticate user
+// Authenticate user session
 if (!isset($_SESSION['user_id'])) {
     header("Location: index.php");
     exit();
 }
 
-if (isset($_SESSION['role']) && $_SESSION['role'] !== 'customer') {
-    header("Location: index.php");
+// Extract role and prevent administrative users from accidentally landing on customer dashboard
+$user_role = strtolower($_SESSION['role'] ?? $_SESSION['user_role'] ?? 'customer');
+
+if (in_array($user_role, ['admin', 'agent', 'branch_agent', 'fleet_manager', 'staff'], true)) {
+    if ($user_role === 'admin') {
+        header("Location: admin_dashboard.php");
+    } elseif ($user_role === 'fleet_manager') {
+        header("Location: fleet_dashboard.php");
+    } else {
+        header("Location: agent_dashboard.php");
+    }
     exit();
 }
 
-$user_id = $_SESSION['user_id'];
+$user_id   = $_SESSION['user_id'];
 $user_name = $_SESSION['user_name'] ?? 'Valued Customer';
-$cars = [];
+$cars      = [];
 $my_rentals = [];
 $error_msg = '';
 
@@ -30,7 +40,7 @@ try {
     $stmt->execute();
     $cars = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    // 2. Fetch active rentals for the logged-in user without hardcoding c.make
+    // 2. Fetch active rentals for the logged-in user
     $rental_query = "
         SELECT r.*, c.*
         FROM rentals r
@@ -63,14 +73,10 @@ try {
         .header-title { margin: 30px 0 15px 0; color: #1a252f; }
         .alert-success { background-color: #d4edda; color: #155724; padding: 15px; border-radius: 5px; margin-bottom: 25px; border: 1px solid #c3e6cb; font-weight: bold; }
         .alert-error { background-color: #f8d7da; color: #721c24; padding: 15px; border-radius: 5px; margin-bottom: 25px; }
-        
-        /* Rentals Table Styles */
         .rentals-table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 10px rgba(0,0,0,0.05); margin-bottom: 40px; }
         .rentals-table th, .rentals-table td { padding: 14px 18px; text-align: left; border-bottom: 1px solid #eee; }
         .rentals-table th { background-color: #1a252f; color: white; font-weight: 600; }
         .status-badge { background-color: #28a745; color: white; padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: bold; text-transform: uppercase; }
-
-        /* Catalog Grid Styles */
         .catalog-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 25px; }
         .card { background: #fff; border-radius: 10px; overflow: hidden; border-top: 4px solid #007bff; box-shadow: 0 4px 10px rgba(0,0,0,0.08); }
         .card-body { padding: 25px; }
@@ -117,7 +123,7 @@ try {
             <tbody>
                 <?php foreach ($my_rentals as $rental): ?>
                     <?php 
-                        $vehicle_make = $rental['make'] ?? $rental['car_make'] ?? $rental['brand'] ?? $rental['title'] ?? 'Vehicle';
+                        $vehicle_make  = $rental['make'] ?? $rental['car_make'] ?? $rental['brand'] ?? $rental['title'] ?? 'Vehicle';
                         $vehicle_model = $rental['model'] ?? $rental['car_model'] ?? '';
                     ?>
                     <tr>
@@ -125,8 +131,8 @@ try {
                         <td><?php echo htmlspecialchars($rental['category'] ?? $rental['type'] ?? 'Standard'); ?></td>
                         <td><?php echo htmlspecialchars($rental['start_date']); ?></td>
                         <td><?php echo htmlspecialchars($rental['end_date']); ?></td>
-                        <td>$<?php echo htmlspecialchars(number_format((float)$rental['total_price'], 2)); ?></td>
-                        <td><span class="status-badge"><?php echo htmlspecialchars($rental['status']); ?></span></td>
+                        <td>$<?php echo htmlspecialchars(number_format((float)($rental['total_price'] ?? 0), 2)); ?></td>
+                        <td><span class="status-badge"><?php echo htmlspecialchars($rental['status'] ?? 'Confirmed'); ?></span></td>
                     </tr>
                 <?php endforeach; ?>
             </tbody>
@@ -143,7 +149,7 @@ try {
         <?php if (!empty($cars)): ?>
             <?php foreach ($cars as $car): ?>
                 <?php 
-                    $make = $car['make'] ?? $car['car_make'] ?? $car['brand'] ?? $car['title'] ?? 'Vehicle';
+                    $make  = $car['make'] ?? $car['car_make'] ?? $car['brand'] ?? $car['title'] ?? 'Vehicle';
                     $model = $car['model'] ?? $car['car_model'] ?? '';
                     $price = $car['daily_rate'] ?? $car['price_per_day'] ?? $car['price'] ?? '0.00';
                 ?>

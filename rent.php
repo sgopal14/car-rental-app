@@ -1,4 +1,5 @@
 <?php
+ob_start();
 session_start();
 require_once 'db.php';
 
@@ -9,9 +10,11 @@ if (!isset($_SESSION['user_id'])) {
 }
 
 // Generate token using db.php helper or fallback session variable
-$csrf_token = function_exists('generate_csrf_token') 
-    ? generate_csrf_token() 
-    : ($_SESSION['csrf_token'] ?? ($_SESSION['csrf_token'] = bin2hex(random_bytes(32))));
+$csrf_token = function_exists('get_csrf_token') 
+    ? get_csrf_token() 
+    : (function_exists('generate_csrf_token') 
+        ? generate_csrf_token() 
+        : ($_SESSION['csrf_token'] ?? ($_SESSION['csrf_token'] = bin2hex(random_bytes(32)))));
 
 $car_id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
 if (!$car_id) {
@@ -34,7 +37,7 @@ if (!$car && empty($error_msg)) {
     die("Vehicle not found. <a href='user_dashboard.php'>Return to Catalog</a>");
 }
 
-$make = $car['make'] ?? $car['car_make'] ?? $car['brand'] ?? 'Vehicle';
+$make  = $car['make'] ?? $car['car_make'] ?? $car['brand'] ?? 'Vehicle';
 $model = $car['model'] ?? $car['car_model'] ?? '';
 $price = $car['daily_rate'] ?? $car['price_per_day'] ?? $car['price'] ?? '0.00';
 ?>

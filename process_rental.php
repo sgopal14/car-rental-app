@@ -1,4 +1,5 @@
 <?php
+ob_start();
 session_start();
 require_once 'db.php';
 
@@ -7,12 +8,12 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit();
 }
 
-// 1. CSRF Token Validation
+// 1. Unified CSRF Token Validation
 if (function_exists('verify_csrf_token')) {
     verify_csrf_token();
 } else {
-    $posted_token = $_POST['csrf_token'] ?? $_POST['token'] ?? '';
-    $session_token = $_SESSION['csrf_token'] ?? $_SESSION['token'] ?? '';
+    $posted_token  = $_POST['csrf_token'] ?? $_POST['token'] ?? '';
+    $session_token = $_SESSION['csrf_token'] ?? '';
 
     if (empty($posted_token) || empty($session_token) || !hash_equals($session_token, $posted_token)) {
         http_response_code(403);
@@ -26,10 +27,10 @@ if (!isset($_SESSION['user_id'])) {
     exit();
 }
 
-$user_id = $_SESSION['user_id'];
-$car_id = filter_input(INPUT_POST, 'car_id', FILTER_VALIDATE_INT);
+$user_id    = $_SESSION['user_id'];
+$car_id     = filter_input(INPUT_POST, 'car_id', FILTER_VALIDATE_INT);
 $start_date = $_POST['start_date'] ?? '';
-$end_date = $_POST['end_date'] ?? '';
+$end_date   = $_POST['end_date'] ?? '';
 
 if (!$car_id || empty($start_date) || empty($end_date)) {
     die("Invalid form input. <a href='user_dashboard.php'>Return to Catalog</a>");
@@ -46,17 +47,16 @@ try {
     }
 
     $daily_rate = (float)(
-        $car['price_per_day'] ?? 
         $car['daily_rate'] ?? 
+        $car['price_per_day'] ?? 
         $car['rate'] ?? 
         $car['price'] ?? 
-        $car['cost'] ?? 
         50.00
     );
 
     // Calculate rental duration
-    $d1 = new DateTime($start_date);
-    $d2 = new DateTime($end_date);
+    $d1   = new DateTime($start_date);
+    $d2   = new DateTime($end_date);
     $days = $d1->diff($d2)->days;
     if ($days <= 0) { 
         $days = 1; 
@@ -64,7 +64,7 @@ try {
 
     $total_price = $daily_rate * $days;
 
-    // 4. Direct insertion into rentals table
+    // 4. Insertion into rentals table
     $insert = $pdo->prepare("
         INSERT INTO rentals (user_id, car_id, start_date, end_date, total_price, status) 
         VALUES (:user_id, :car_id, :start_date, :end_date, :total_price, 'confirmed')

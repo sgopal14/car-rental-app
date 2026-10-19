@@ -1,62 +1,73 @@
 <?php
+ob_start();
 session_start();
 require_once 'db.php';
 
-if (!isset($_SESSION['user_id']) || $_SESSION['user_role'] !== 'user') {
+// Safe session role verification
+$user_role = strtolower($_SESSION['role'] ?? $_SESSION['user_role'] ?? '');
+
+if (!isset($_SESSION['user_id']) || $user_role !== 'customer') {
     header('Location: index.php');
-    exit;
+    exit();
 }
 
-$carId = $_GET['car_id'] ?? null;
+$carId = filter_input(INPUT_GET, 'car_id', FILTER_VALIDATE_INT);
 $error = '';
 
 if (!$carId) {
     header('Location: user_dashboard.php');
-    exit;
+    exit();
 }
 
-// Fetch car details and confirm availability
-$stmt = $pdo->prepare("SELECT * FROM cars WHERE id = :id AND status = 'available'");
+// Fetch car details safely
+$stmt = $pdo->prepare("SELECT * FROM cars WHERE id = :id AND (status = 'available' OR status IS NULL)");
 $stmt->execute(['id' => $carId]);
-$car = $stmt->fetch();
+$car = $stmt->fetch(PDO::FETCH_ASSOC);
 
 if (!$car) {
     die("Selected vehicle is either unavailable or does not exist. <a href='user_dashboard.php'>Return to Dashboard</a>");
 }
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $days = (int)($_POST['days'] ?? 1);
-    $cardNumber = trim($_POST['card_number'] ?? '');
-    $totalPrice = $car['daily_rate'] * $days;
+$daily_rate = (float)($car['daily_rate'] ?? $car['price_per_day'] ?? $car['price'] ?? 0.00);
 
-    // Server-side credit card 16-digit validation
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (function_exists('verify_csrf_token')) {
+        verify_csrf_token();
+    }
+
+    $days       = (int)($_POST['days'] ?? 1);
+    $cardNumber = trim($_POST['card_number'] ?? '');
+    $totalPrice = $daily_rate * $days;
+
     if (!preg_match('/^\d{16}$/', $cardNumber)) {
         $error = 'Please enter a valid 16-digit credit card number (numbers only).';
     } else {
         $pdo->beginTransaction();
         try {
-            // 1. Create Rental record
-            $rentalStmt = $pdo->prepare("INSERT INTO rentals (user_id, car_id, total_price, status) VALUES (:user_id, :car_id, :total_price, 'active')");
+            $rentalStmt = $pdo->prepare("INSERT INTO rentals (user_id, car_id, total_price, status) VALUES (:user_id, :car_id, :total_price, 'confirmed')");
             $rentalStmt->execute([
-                'user_id' => $_SESSION['user_id'],
-                'car_id' => $car['id'],
+                'user_id'     => $_SESSION['user_id'],
+                'car_id'      => $car['id'],
                 'total_price' => $totalPrice
             ]);
 
-            // 2. Mark car as rented
             $carStmt = $pdo->prepare("UPDATE cars SET status = 'rented' WHERE id = :id");
             $carStmt->execute(['id' => $car['id']]);
 
             $pdo->commit();
 
-            header('Location: user_dashboard.php');
-            exit;
+            header('Location: user_dashboard.php?booking=success');
+            exit();
         } catch (Exception $e) {
             $pdo->rollBack();
-            $error = 'Transaction failed. Please try again.';
+            $error = 'Transaction failed: ' . htmlspecialchars($e->getMessage());
         }
     }
 }
+
+$csrf_token = function_exists('get_csrf_token') 
+    ? get_csrf_token() 
+    : ($_SESSION['csrf_token'] ?? ($_SESSION['csrf_token'] = bin2hex(random_bytes(32))));
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -65,14 +76,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Checkout & Payment - DriveEase</title>
     <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: Arial, sans-serif; }
-        body { background: #f4f7f6; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background: #f4f6f9; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
         .card { background: white; padding: 40px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); width: 100%; max-width: 450px; }
         .summary-box { background: #f8f9fa; border: 1px solid #ddd; padding: 15px; border-radius: 4px; margin: 20px 0; }
         .form-group { margin-bottom: 15px; }
         label { display: block; margin-bottom: 5px; font-weight: bold; font-size: 14px; }
         input[type="number"], input[type="text"] { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; outline: none; }
-        input[type="text"]:focus { border-color: #0066cc; }
         .btn { width: 100%; padding: 12px; background: #28a745; color: white; border: none; border-radius: 4px; font-size: 16px; cursor: pointer; font-weight: bold; margin-top: 10px; }
         .btn:hover { background: #218838; }
         .cancel-link { display: block; text-align: center; margin-top: 15px; color: #666; text-decoration: none; font-size: 14px; }
@@ -92,18 +102,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <?php endif; ?>
 
     <div class="summary-box">
-        <h3><?= htmlspecialchars($car['brand'] . ' ' . $car['model']) ?></h3>
-        <p style="margin-top: 5px;">Rate: <strong>$<?= number_format($car['daily_rate'], 2) ?></strong> / day</p>
+        <h3><?= htmlspecialchars(($car['brand'] ?? $car['make'] ?? 'Vehicle') . ' ' . ($car['model'] ?? '')) ?></h3>
+        <p style="margin-top: 5px;">Rate: <strong>$<?= number_format($daily_rate, 2) ?></strong> / day</p>
     </div>
 
-    <form action="payment.php?car_id=<?= $car['id'] ?>" method="POST" id="paymentForm" novalidate>
+    <form action="payment.php?car_id=<?= $car['id'] ?>" method="POST" id="paymentForm">
+        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
+
         <div class="form-group">
             <label for="days">Rental Duration (Days)</label>
             <input type="number" id="days" name="days" min="1" max="30" value="1" required>
         </div>
 
         <div style="border-top: 1px solid #ccc; padding-top: 15px; margin-top: 15px;">
-            <h4>Dummy Payment Details</h4>
+            <h4>Payment Details</h4>
             <div class="form-group" style="margin-top: 10px;">
                 <label for="card_number">Credit Card Number</label>
                 <input 
@@ -129,12 +141,10 @@ const cardInput = document.getElementById('card_number');
 const paymentForm = document.getElementById('paymentForm');
 const jsError = document.getElementById('jsError');
 
-// Strip non-digit characters in real-time as user types
 cardInput.addEventListener('input', function(e) {
     this.value = this.value.replace(/\D/g, '').slice(0, 16);
 });
 
-// Client-side submission check
 paymentForm.addEventListener('submit', function(e) {
     const cardValue = cardInput.value.trim();
 
