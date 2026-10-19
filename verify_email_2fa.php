@@ -2,176 +2,143 @@
 session_start();
 require_once 'db.php';
 
-// Enforce CSRF token verification on all POST submissions
-verify_csrf_token();
+$error_msg = '';
+$success_msg = '';
 
-// Ensure the user has completed Step 1 (Password Authentication)
+// Require a pending 2FA login state
 if (!isset($_SESSION['pending_2fa_user_id'])) {
-    header("Location: index.php");
+    header("Location: login.php");
     exit();
 }
 
-$error = '';
+$pending_user_id = $_SESSION['pending_2fa_user_id'];
+
+// Safe CSRF verification check
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && function_exists('verify_csrf_token')) {
+    verify_csrf_token();
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $user_id = $_SESSION['pending_2fa_user_id'] ?? 0;
-    $input_code = trim($_POST['two_factor_code'] ?? '');
+    $entered_code = trim($_POST['otp_code'] ?? $_POST['2fa_code'] ?? '');
 
-    if ($user_id > 0 && !empty($input_code)) {
-        // Query temporary 2FA token details from RDS
-        $stmt = $pdo->prepare("SELECT id, name, email, role, two_factor_code, two_factor_expires_at FROM users WHERE id = ?");
-        $stmt->execute([$user_id]);
-        $user = $stmt->fetch();
+    if (empty($entered_code)) {
+        $error_msg = "Please enter the 6-digit verification code sent to your email.";
+    } else {
+        try {
+            // Fetch user record and 2FA secrets
+            $stmt = $pdo->prepare("SELECT * FROM users WHERE id = :id LIMIT 1");
+            $stmt->execute([':id' => $pending_user_id]);
+            $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        if ($user && $user['two_factor_code'] === $input_code) {
-            if (strtotime($user['two_factor_expires_at']) >= time()) {
-                // Success: Clear temporary 2FA code and expiration from RDS
-                $clear_stmt = $pdo->prepare("UPDATE users SET two_factor_code = NULL, two_factor_expires_at = NULL WHERE id = ?");
-                $clear_stmt->execute([$user['id']]);
+            if (!$user) {
+                unset($_SESSION['pending_2fa_user_id']);
+                header("Location: login.php");
+                exit();
+            }
 
-                // Regenerate Session ID to prevent Session Fixation attacks
-                session_regenerate_id(true);
+            // Extract OTP details from schema
+            $stored_otp = $user['two_factor_code'] ?? $user['otp_code'] ?? $user['2fa_code'] ?? '';
+            $otp_expiry = $user['two_factor_expires_at'] ?? $user['otp_expires_at'] ?? $user['2fa_expires'] ?? null;
+
+            $is_valid = false;
+
+            // Check timing window if expiration is stored
+            if ($otp_expiry && strtotime($otp_expiry) < time()) {
+                $error_msg = "Verification code has expired. Please log in again to generate a new code.";
+            } elseif (!empty($stored_otp) && hash_equals((string)$stored_otp, (string)$entered_code)) {
+                $is_valid = true;
+            } else {
+                $error_msg = "Invalid verification code. Please check your email and try again.";
+            }
+
+            if ($is_valid) {
+                // Clear 2FA pending state
                 unset($_SESSION['pending_2fa_user_id']);
 
-                // Initialize fully authenticated session
-                $_SESSION['user_id'] = $user['id'];
-                $_SESSION['user_name'] = $user['name'];
-                $_SESSION['user_email'] = $user['email'];
-                $_SESSION['role'] = $user['role'];
-
-                // Route user to their designated dashboard role
-                switch ($user['role']) {
-                    case 'admin':
-                        $target = "admin_dashboard.php";
-                        break;
-                    case 'fleet_manager':
-                        $target = "fleet_dashboard.php";
-                        break;
-                    case 'branch_agent':
-                        $target = "agent_dashboard.php";
-                        break;
-                    case 'customer':
-                    default:
-                        $target = "user_dashboard.php";
-                        break;
+                // Reset OTP code in database to prevent reuse
+                try {
+                    $clear_stmt = $pdo->prepare("UPDATE users SET two_factor_code = NULL, two_factor_expires_at = NULL WHERE id = :id");
+                    $clear_stmt->execute([':id' => $user['id']]);
+                } catch (PDOException $e) {
+                    // Ignore schema column name mismatches when clearing OTP
                 }
 
-                header("Location: " . $target);
-                exit();
-            } else {
-                $error = "Verification code has expired. Please sign in again.";
+                // Regenerate session ID for security
+                session_regenerate_id(true);
+
+                // Populate authenticated session variables
+                $_SESSION['user_id'] = $user['id'];
+                $_SESSION['user_name'] = $user['username'] ?? $user['name'] ?? 'User';
+                
+                // Extract lowercased role with default fallback
+                $role = strtolower(trim($user['role'] ?? $user['user_type'] ?? 'customer'));
+                $_SESSION['role'] = $role;
+
+                // Dynamic Role Redirection to Agent or Customer Dashboard
+                if (in_array($role, ['agent', 'admin', 'staff'])) {
+                    header("Location: agent_dashboard.php");
+                    exit();
+                } else {
+                    header("Location: user_dashboard.php");
+                    exit();
+                }
             }
-        } else {
-            $error = "Invalid 6-digit verification code. Please check your email.";
+
+        } catch (PDOException $e) {
+            $error_msg = "Database Error: " . htmlspecialchars($e->getMessage());
         }
-    } else {
-        $error = "Please enter the 6-digit verification code.";
     }
 }
+
+// Generate CSRF token for form
+$csrf_token = function_exists('generate_csrf_token') 
+    ? generate_csrf_token() 
+    : ($_SESSION['csrf_token'] ?? ($_SESSION['csrf_token'] = bin2hex(random_bytes(32))));
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DriveEase - 2FA Security Verification</title>
+    <title>DriveEase - Two-Factor Authentication</title>
     <style>
-        * { box-sizing: border-box; }
-        body { 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-            background-color: #f4f6f9; 
-            display: flex; 
-            justify-content: center; 
-            align-items: center; 
-            min-height: 100vh; 
-            margin: 0; 
-            padding: 20px; 
-        }
-        .auth-card { 
-            background: #fff; 
-            padding: 35px; 
-            border-radius: 10px; 
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1); 
-            width: 100%; 
-            max-width: 420px; 
-        }
-        .auth-card h2 { 
-            margin-top: 0; 
-            color: #1a252f; 
-            text-align: center; 
-            font-size: 24px; 
-            margin-bottom: 20px; 
-        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+        .auth-card { background: #fff; padding: 35px; border-radius: 10px; width: 100%; max-width: 420px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); border-top: 5px solid #28a745; }
+        .auth-card h2 { color: #1a252f; margin-bottom: 10px; text-align: center; }
+        .auth-card p { color: #6c757d; font-size: 14px; text-align: center; margin-bottom: 25px; line-height: 1.5; }
+        .alert-error { background-color: #f8d7da; color: #721c24; padding: 12px; border-radius: 5px; margin-bottom: 20px; font-size: 14px; text-align: center; border: 1px solid #f5c6cb; }
         .form-group { margin-bottom: 20px; }
-        .form-group input { 
-            width: 100%; 
-            padding: 12px; 
-            border: 1px solid #ced4da; 
-            border-radius: 5px; 
-            font-size: 22px; 
-            text-align: center; 
-            letter-spacing: 6px; 
-            font-weight: bold; 
-        }
-        .btn { 
-            width: 100%; 
-            padding: 12px; 
-            background: #28a745; 
-            color: white; 
-            border: none; 
-            border-radius: 5px; 
-            font-size: 16px; 
-            font-weight: bold; 
-            cursor: pointer; 
-        }
-        .btn:hover { background: #218838; }
-        .alert { 
-            padding: 12px; 
-            border-radius: 5px; 
-            margin-bottom: 20px; 
-            font-size: 14px; 
-            text-align: center; 
-            font-weight: bold; 
-            background: #f8d7da; 
-            color: #721c24; 
-            border: 1px solid #f5c6cb; 
-        }
-        .cancel-link { 
-            display: block; 
-            text-align: center; 
-            margin-top: 15px; 
-            color: #6c757d; 
-            text-decoration: none; 
-            font-size: 14px; 
-        }
-        .cancel-link:hover { text-decoration: underline; }
+        .form-group label { display: block; margin-bottom: 8px; font-weight: bold; color: #333; font-size: 14px; }
+        .form-group input { width: 100%; padding: 12px; border: 1px solid #ccc; border-radius: 5px; font-size: 18px; text-align: center; letter-spacing: 4px; }
+        .btn-submit { background-color: #28a745; color: white; border: none; padding: 12px; width: 100%; font-size: 16px; font-weight: bold; border-radius: 5px; cursor: pointer; }
+        .btn-submit:hover { background-color: #218838; }
+        .back-link { display: block; text-align: center; margin-top: 20px; color: #007bff; text-decoration: none; font-size: 14px; }
     </style>
 </head>
 <body>
 
 <div class="auth-card">
-    <h2>Two-Factor Security</h2>
+    <h2>Email Verification</h2>
+    <p>Please enter the 6-digit security code sent to your registered email address to complete sign in.</p>
 
-    <?php if (!empty($error)): ?>
-        <div class="alert"><?php echo htmlspecialchars($error); ?></div>
+    <?php if (!empty($error_msg)): ?>
+        <div class="alert-error"><?php echo $error_msg; ?></div>
     <?php endif; ?>
 
     <form action="verify_email_2fa.php" method="POST">
-        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(get_csrf_token()); ?>">
-        
-        <div style="text-align:center; margin-bottom:20px;">
-            <h3 style="margin-bottom:8px; color:#333;">Email Verification</h3>
-            <p style="color:#6c757d; font-size:13px; margin:0;">Enter the 6-digit security code sent to your registered email address.</p>
-        </div>
+        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
+        <input type="hidden" name="token" value="<?php echo htmlspecialchars($csrf_token); ?>">
 
         <div class="form-group">
-            <input type="text" name="two_factor_code" maxlength="6" required placeholder="123456" autofocus autocomplete="off">
+            <label for="otp_code">Security Verification Code</label>
+            <input type="text" id="otp_code" name="otp_code" required maxlength="6" autocomplete="off" placeholder="123456" autofocus>
         </div>
 
-        <button type="submit" class="btn">Verify & Complete Sign In</button>
+        <button type="submit" class="btn-submit">Verify & Sign In</button>
     </form>
 
-    <a href="index.php" class="cancel-link">&larr; Cancel and return to Login</a>
+    <a href="login.php" class="back-link">&larr; Return to Login</a>
 </div>
 
 </body>
