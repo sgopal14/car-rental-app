@@ -8,7 +8,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && function_exists('verify_csrf_token'
     verify_csrf_token();
 }
 
-// 1. Session & Role Access Control (Allows admin, agent, and management roles)
+// 1. Session & Role Access Control
 $allowed_admin_roles = ['admin', 'agent', 'branch_agent', 'fleet_manager', 'staff'];
 $current_role = strtolower($_SESSION['role'] ?? $_SESSION['user_role'] ?? '');
 
@@ -20,6 +20,19 @@ if (!isset($_SESSION['user_id']) || !in_array($current_role, $allowed_admin_role
 $message = '';
 $error = '';
 
+// Helper function to check if a table exists in the MySQL database
+function table_exists($pdo, $table_name) {
+    try {
+        $result = $pdo->query("SHOW TABLES LIKE " . $pdo->quote($table_name));
+        return $result && $result->rowCount() > 0;
+    } catch (Exception $e) {
+        return false;
+    }
+}
+
+// Detect whether system uses 'rentals' or 'bookings' table
+$rental_table = table_exists($pdo, 'rentals') ? 'rentals' : 'bookings';
+
 // 2. Handle CSV Report Exports
 if (isset($_GET['export'])) {
     $export_type = $_GET['export'];
@@ -28,9 +41,9 @@ if (isset($_GET['export'])) {
         header('Content-Type: text/csv');
         header('Content-Disposition: attachment; filename="admin_fleet_report_' . date('Y-m-d') . '.csv"');
         $output = fopen('php://output', 'w');
-        fputcsv($output, ['Car ID', 'Brand', 'Model', 'Year', 'Daily Rate ($)', 'Status']);
+        fputcsv($output, ['Car ID', 'Make/Brand', 'Model', 'Daily Rate ($)', 'Status']);
         
-        $stmt = $pdo->query("SELECT id, brand, model, year, price_per_day, status FROM cars ORDER BY id ASC");
+        $stmt = $pdo->query("SELECT id, COALESCE(make, brand) AS make, model, COALESCE(price_per_day, daily_rate) AS rate, status FROM cars ORDER BY id ASC");
         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
             fputcsv($output, $row);
         }
@@ -40,13 +53,12 @@ if (isset($_GET['export'])) {
         header('Content-Type: text/csv');
         header('Content-Disposition: attachment; filename="admin_sales_report_' . date('Y-m-d') . '.csv"');
         $output = fopen('php://output', 'w');
-        fputcsv($output, ['Booking ID', 'Customer Name', 'Customer Email', 'Vehicle', 'Start Date', 'End Date', 'Total Price ($)', 'Status', 'Created At']);
+        fputcsv($output, ['Booking ID', 'Customer', 'Start Date', 'End Date', 'Total Price ($)', 'Status']);
         
-        $sql = "SELECT b.id, u.name, u.email, CONCAT(c.brand, ' ', c.model) AS vehicle, b.start_date, b.end_date, b.total_price, b.status, b.created_at 
-                FROM bookings b 
-                JOIN users u ON b.user_id = u.id 
-                JOIN cars c ON b.car_id = c.id 
-                ORDER BY b.id DESC";
+        $sql = "SELECT r.id, COALESCE(u.name, u.email) AS customer, r.start_date, r.end_date, r.total_price, r.status 
+                FROM {$rental_table} r 
+                LEFT JOIN users u ON r.user_id = u.id 
+                ORDER BY r.id DESC";
         $stmt = $pdo->query($sql);
         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
             fputcsv($output, $row);
@@ -56,7 +68,7 @@ if (isset($_GET['export'])) {
     }
 }
 
-// 3. Handle Admin Actions (User Management, Fleet CRUD, Branch Operations)
+// 3. Handle Admin Actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     $action = $_POST['action'];
 
@@ -93,17 +105,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     }
     // FLEET MANAGEMENT: Add Vehicle Asset
     elseif ($action === 'add_vehicle') {
-        $brand = trim($_POST['brand'] ?? '');
+        $make = trim($_POST['make'] ?? $_POST['brand'] ?? '');
         $model = trim($_POST['model'] ?? '');
-        $year = intval($_POST['year'] ?? 0);
-        $price_per_day = floatval($_POST['price_per_day'] ?? 0);
-        $image_url = trim($_POST['image_url'] ?? '');
+        $category = trim($_POST['category'] ?? 'Standard');
+        $price = floatval($_POST['price_per_day'] ?? $_POST['daily_rate'] ?? 0);
 
-        if (!empty($brand) && !empty($model) && $year > 1900 && $price_per_day > 0) {
+        if (!empty($make) && !empty($model) && $price > 0) {
             try {
-                $stmt = $pdo->prepare("INSERT INTO cars (brand, model, year, price_per_day, status, image_url) VALUES (?, ?, ?, ?, 'available', ?)");
-                $stmt->execute([$brand, $model, $year, $price_per_day, $image_url]);
-                $message = "Vehicle asset '{$brand} {$model}' added successfully.";
+                // Determine exact column names present in 'cars'
+                $cols = $pdo->query("SHOW COLUMNS FROM cars")->fetchAll(PDO::FETCH_COLUMN);
+                $make_col = in_array('make', $cols, true) ? 'make' : 'brand';
+                $price_col = in_array('price_per_day', $cols, true) ? 'price_per_day' : 'daily_rate';
+
+                $stmt = $pdo->prepare("INSERT INTO cars ({$make_col}, model, category, {$price_col}, status) VALUES (?, ?, ?, ?, 'available')");
+                $stmt->execute([$make, $model, $category, $price]);
+                $message = "Vehicle asset '{$make} {$model}' added to fleet successfully.";
             } catch (PDOException $e) {
                 $error = "Failed to add vehicle: " . $e->getMessage();
             }
@@ -125,7 +141,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             }
         }
     }
-    // FLEET MANAGEMENT: Delete Vehicle Asset
+    // FLEET MANAGEMENT: Delete Vehicle
     elseif ($action === 'delete_vehicle') {
         $car_id = intval($_POST['car_id'] ?? 0);
         if ($car_id > 0) {
@@ -138,22 +154,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             }
         }
     }
-    // BRANCH OPERATIONS: Process Check-out or Check-in
+    // BRANCH OPERATIONS: Process Check-out or Return
     elseif ($action === 'process_booking_status') {
         $booking_id = intval($_POST['booking_id'] ?? 0);
         $car_id = intval($_POST['car_id'] ?? 0);
         $target_status = $_POST['target_status'] ?? '';
 
-        if ($booking_id > 0 && $car_id > 0) {
+        if ($booking_id > 0) {
             try {
                 $pdo->beginTransaction();
                 
-                $b_stmt = $pdo->prepare("UPDATE bookings SET status = ? WHERE id = ?");
+                $b_stmt = $pdo->prepare("UPDATE {$rental_table} SET status = ? WHERE id = ?");
                 $b_stmt->execute([$target_status, $booking_id]);
 
-                $car_new_status = ($target_status === 'confirmed') ? 'rented' : (($target_status === 'completed' || $target_status === 'cancelled') ? 'available' : 'available');
-                $c_stmt = $pdo->prepare("UPDATE cars SET status = ? WHERE id = ?");
-                $c_stmt->execute([$car_new_status, $car_id]);
+                if ($car_id > 0) {
+                    $car_new_status = ($target_status === 'confirmed') ? 'rented' : 'available';
+                    $c_stmt = $pdo->prepare("UPDATE cars SET status = ? WHERE id = ?");
+                    $c_stmt->execute([$car_new_status, $car_id]);
+                }
 
                 $pdo->commit();
                 $message = "Transaction #{$booking_id} updated to " . strtoupper($target_status) . ".";
@@ -165,38 +183,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     }
 }
 
-// 4. Fetch All Comprehensive Admin Data
+// 4. Fetch All Comprehensive Admin Data Safely
+$total_users = 0; $total_cars = 0; $available_cars = 0; $maintenance_cars = 0; $total_revenue = 0.00;
+$users = []; $cars = []; $transactions = []; $top_vehicles = [];
+
 try {
-    $total_users = $pdo->query("SELECT COUNT(*) FROM users")->fetchColumn();
-    $total_cars = $pdo->query("SELECT COUNT(*) FROM cars")->fetchColumn();
-    $available_cars = $pdo->query("SELECT COUNT(*) FROM cars WHERE status = 'available'")->fetchColumn();
-    $maintenance_cars = $pdo->query("SELECT COUNT(*) FROM cars WHERE status = 'maintenance'")->fetchColumn();
-    $total_revenue = $pdo->query("SELECT COALESCE(SUM(total_price), 0) FROM bookings WHERE status IN ('confirmed', 'completed')")->fetchColumn();
+    // Executive Metrics
+    $total_users = (int)$pdo->query("SELECT COUNT(*) FROM users")->fetchColumn();
+    $total_cars = (int)$pdo->query("SELECT COUNT(*) FROM cars")->fetchColumn();
+    $available_cars = (int)$pdo->query("SELECT COUNT(*) FROM cars WHERE status = 'available' OR status IS NULL")->fetchColumn();
+    $maintenance_cars = (int)$pdo->query("SELECT COUNT(*) FROM cars WHERE status = 'maintenance'")->fetchColumn();
+    $total_revenue = (float)$pdo->query("SELECT COALESCE(SUM(total_price), 0) FROM {$rental_table} WHERE status IN ('confirmed', 'completed', 'active')")->fetchColumn();
 
-    $users = $pdo->query("SELECT id, COALESCE(name, email) AS name, email, role, created_at FROM users ORDER BY id ASC")->fetchAll();
-    $cars = $pdo->query("SELECT * FROM cars ORDER BY id ASC")->fetchAll();
+    // User Records
+    $users = $pdo->query("SELECT id, COALESCE(name, email) AS name, email, role, created_at FROM users ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC);
 
+    // Fleet Records
+    $cars = $pdo->query("SELECT * FROM cars ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC);
+
+    // Transaction Records
     $transactions = $pdo->query("
-        SELECT b.id AS booking_id, b.start_date, b.end_date, b.total_price, b.status AS booking_status,
-               u.name AS customer_name, u.email AS customer_email,
-               c.id AS car_id, c.brand, c.model, c.year
-        FROM bookings b
-        JOIN users u ON b.user_id = u.id
-        JOIN cars c ON b.car_id = c.id
-        ORDER BY b.id DESC
-    ")->fetchAll();
+        SELECT r.id AS booking_id, r.start_date, r.end_date, r.total_price, r.status AS booking_status,
+               COALESCE(u.name, u.email, 'Guest') AS customer_name, u.email AS customer_email,
+               c.id AS car_id, COALESCE(c.make, c.brand, 'Vehicle') AS brand, c.model
+        FROM {$rental_table} r
+        LEFT JOIN users u ON r.user_id = u.id
+        LEFT JOIN cars c ON r.car_id = c.id
+        ORDER BY r.id DESC
+    ")->fetchAll(PDO::FETCH_ASSOC);
 
+    // Sales Performance Reporting
     $top_vehicles = $pdo->query("
-        SELECT c.brand, c.model, COUNT(b.id) AS total_rentals, COALESCE(SUM(b.total_price), 0) AS revenue_generated
+        SELECT COALESCE(c.make, c.brand, 'Vehicle') AS brand, c.model, COUNT(r.id) AS total_rentals, COALESCE(SUM(r.total_price), 0) AS revenue_generated
         FROM cars c
-        LEFT JOIN bookings b ON c.id = b.car_id AND b.status IN ('confirmed', 'completed')
+        LEFT JOIN {$rental_table} r ON c.id = r.car_id AND r.status IN ('confirmed', 'completed', 'active')
         GROUP BY c.id
         ORDER BY revenue_generated DESC
         LIMIT 5
-    ")->fetchAll();
+    ")->fetchAll(PDO::FETCH_ASSOC);
 
 } catch (PDOException $e) {
-    $error = "Database query error: " . $e->getMessage();
+    $error = "Database Error: " . $e->getMessage();
 }
 
 $csrf_token = function_exists('get_csrf_token') ? get_csrf_token() : ($_SESSION['csrf_token'] ?? '');
@@ -360,6 +387,184 @@ $csrf_token = function_exists('get_csrf_token') ? get_csrf_token() : ($_SESSION[
                         </td>
                     </tr>
                 <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- 3. Fleet Asset Management -->
+    <div class="card">
+        <div class="card-header">
+            <h2>Fleet Asset Management - Add & Control Inventory</h2>
+            <a href="admin_dashboard.php?export=fleet_csv" class="btn-export">Export Fleet CSV</a>
+        </div>
+
+        <form method="POST" style="margin-bottom: 20px;">
+            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
+            <input type="hidden" name="action" value="add_vehicle">
+            <div class="form-grid">
+                <div class="form-group">
+                    <label>Make / Brand</label>
+                    <input type="text" name="make" placeholder="e.g., Toyota" required>
+                </div>
+                <div class="form-group">
+                    <label>Model</label>
+                    <input type="text" name="model" placeholder="e.g., RAV4" required>
+                </div>
+                <div class="form-group">
+                    <label>Category</label>
+                    <select name="category">
+                        <option value="SUV">SUV</option>
+                        <option value="Sedan">Sedan</option>
+                        <option value="Luxury">Luxury</option>
+                        <option value="Economy">Economy</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Daily Rate ($)</label>
+                    <input type="number" step="0.01" name="price_per_day" placeholder="65.00" required>
+                </div>
+            </div>
+            <button type="submit" class="btn-submit">+ Add Vehicle Asset</button>
+        </form>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Asset ID</th>
+                    <th>Vehicle</th>
+                    <th>Category</th>
+                    <th>Daily Rate</th>
+                    <th>Status</th>
+                    <th>Status Control</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach ($cars as $car): ?>
+                    <?php 
+                        $make = $car['make'] ?? $car['brand'] ?? 'Vehicle';
+                        $price = $car['price_per_day'] ?? $car['daily_rate'] ?? 0.00;
+                        $status = strtolower($car['status'] ?? 'available');
+                    ?>
+                    <tr>
+                        <td>#<?php echo $car['id']; ?></td>
+                        <td><strong><?php echo htmlspecialchars(trim($make . ' ' . ($car['model'] ?? ''))); ?></strong></td>
+                        <td><?php echo htmlspecialchars($car['category'] ?? $car['type'] ?? 'Standard'); ?></td>
+                        <td>$<?php echo number_format((float)$price, 2); ?></td>
+                        <td>
+                            <span class="badge badge-<?php echo htmlspecialchars($status); ?>">
+                                <?php echo htmlspecialchars(strtoupper($status)); ?>
+                            </span>
+                        </td>
+                        <td>
+                            <form method="POST" style="display:flex; gap:5px;">
+                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
+                                <input type="hidden" name="action" value="update_car_status">
+                                <input type="hidden" name="car_id" value="<?php echo $car['id']; ?>">
+                                <select name="status" onchange="this.form.submit()">
+                                    <option value="available" <?php if ($status === 'available') echo 'selected'; ?>>Available</option>
+                                    <option value="rented" <?php if ($status === 'rented') echo 'selected'; ?>>Rented</option>
+                                    <option value="maintenance" <?php if ($status === 'maintenance') echo 'selected'; ?>>Maintenance</option>
+                                </select>
+                            </form>
+                        </td>
+                        <td>
+                            <form method="POST" onsubmit="return confirm('Remove vehicle asset from fleet?');" style="display:inline;">
+                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
+                                <input type="hidden" name="action" value="delete_vehicle">
+                                <input type="hidden" name="car_id" value="<?php echo $car['id']; ?>">
+                                <button type="submit" class="btn-action btn-delete">Delete</button>
+                            </form>
+                        </td>
+                    </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- 4. Branch Operations Desk -->
+    <div class="card">
+        <div class="card-header">
+            <h2>Branch Operations & Rental Transaction Desk</h2>
+            <a href="admin_dashboard.php?export=sales_csv" class="btn-export">Export Sales CSV</a>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Tx ID</th>
+                    <th>Customer</th>
+                    <th>Vehicle</th>
+                    <th>Rental Dates</th>
+                    <th>Total Price</th>
+                    <th>Status</th>
+                    <th>Operations Control</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php if (!empty($transactions)): ?>
+                    <?php foreach ($transactions as $tx): ?>
+                        <?php $tx_status = strtolower($tx['booking_status'] ?? 'confirmed'); ?>
+                        <tr>
+                            <td><strong>#<?php echo $tx['booking_id']; ?></strong></td>
+                            <td>
+                                <strong><?php echo htmlspecialchars($tx['customer_name']); ?></strong><br>
+                                <small style="color:#6c757d;"><?php echo htmlspecialchars($tx['customer_email'] ?? ''); ?></small>
+                            </td>
+                            <td><?php echo htmlspecialchars(trim(($tx['brand'] ?? 'Vehicle') . ' ' . ($tx['model'] ?? ''))); ?></td>
+                            <td><?php echo htmlspecialchars(($tx['start_date'] ?? 'N/A') . ' to ' . ($tx['end_date'] ?? 'N/A')); ?></td>
+                            <td><strong>$<?php echo number_format((float)($tx['total_price'] ?? 0), 2); ?></strong></td>
+                            <td>
+                                <span class="badge badge-<?php echo htmlspecialchars($tx_status); ?>">
+                                    <?php echo htmlspecialchars(strtoupper($tx_status)); ?>
+                                </span>
+                            </td>
+                            <td>
+                                <form method="POST" style="display:inline;">
+                                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
+                                    <input type="hidden" name="action" value="process_booking_status">
+                                    <input type="hidden" name="booking_id" value="<?php echo $tx['booking_id']; ?>">
+                                    <input type="hidden" name="car_id" value="<?php echo $tx['car_id'] ?? 0; ?>">
+                                    <select name="target_status" onchange="this.form.submit()">
+                                        <option value="confirmed" <?php if ($tx_status === 'confirmed') echo 'selected'; ?>>Confirmed</option>
+                                        <option value="completed" <?php if ($tx_status === 'completed') echo 'selected'; ?>>Completed</option>
+                                        <option value="cancelled" <?php if ($tx_status === 'cancelled') echo 'selected'; ?>>Cancelled</option>
+                                    </select>
+                                </form>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php else: ?>
+                    <tr><td colspan="7" style="text-align:center; color:#6c757d;">No customer rental records currently present.</td></tr>
+                <?php endif; ?>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- 5. Executive Financial Reporting -->
+    <div class="card">
+        <div class="card-header">
+            <h2>Top Revenue-Generating Assets Report</h2>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Vehicle Description</th>
+                    <th>Completed Rentals</th>
+                    <th>Gross Revenue Contributed</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php if (!empty($top_vehicles)): ?>
+                    <?php foreach ($top_vehicles as $tv): ?>
+                        <tr>
+                            <td><strong><?php echo htmlspecialchars(trim(($tv['brand'] ?? 'Vehicle') . ' ' . ($tv['model'] ?? ''))); ?></strong></td>
+                            <td><?php echo number_format($tv['total_rentals']); ?> rental(s)</td>
+                            <td><strong style="color:#28a745;">$<?php echo number_format((float)$tv['revenue_generated'], 2); ?></strong></td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php else: ?>
+                    <tr><td colspan="3" style="text-align:center; color:#6c757d;">No revenue data generated yet.</td></tr>
+                <?php endif; ?>
             </tbody>
         </table>
     </div>
