@@ -1,163 +1,106 @@
 <?php
 ob_start();
-session_start();
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 require_once 'db.php';
 
-// Safe session role verification
-$user_role = strtolower($_SESSION['role'] ?? $_SESSION['user_role'] ?? '');
-
-if (!isset($_SESSION['user_id']) || $user_role !== 'customer') {
-    header('Location: index.php');
+// Verify POST request and user session
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    header("Location: user_dashboard.php");
     exit();
 }
 
-$carId = filter_input(INPUT_GET, 'car_id', FILTER_VALIDATE_INT);
-$error = '';
+verify_csrf_token();
 
-if (!$carId) {
-    header('Location: user_dashboard.php');
+if (!isset($_SESSION['user_id'])) {
+    header("Location: index.php");
     exit();
 }
 
-// Fetch car details safely
-$stmt = $pdo->prepare("SELECT * FROM cars WHERE id = :id AND (status = 'available' OR status IS NULL)");
-$stmt->execute(['id' => $carId]);
-$car = $stmt->fetch(PDO::FETCH_ASSOC);
+$user_id = $_SESSION['user_id'];
+$car_id  = filter_input(INPUT_POST, 'car_id', FILTER_VALIDATE_INT);
+$days    = filter_input(INPUT_POST, 'days', FILTER_VALIDATE_INT);
 
-if (!$car) {
-    die("Selected vehicle is either unavailable or does not exist. <a href='user_dashboard.php'>Return to Dashboard</a>");
+// -------------------------------------------------------------
+// SERVER-SIDE INPUT & BILLING SANITIZATION
+// -------------------------------------------------------------
+
+// 1. Validate Car ID
+if (!$car_id) {
+    die("Error: Invalid vehicle selection. <a href='user_dashboard.php'>Return to Catalog</a>");
 }
 
-$daily_rate = (float)($car['daily_rate'] ?? $car['price_per_day'] ?? $car['price'] ?? 0.00);
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (function_exists('verify_csrf_token')) {
-        verify_csrf_token();
-    }
-
-    $days       = (int)($_POST['days'] ?? 1);
-    $cardNumber = trim($_POST['card_number'] ?? '');
-    $totalPrice = $daily_rate * $days;
-
-    if (!preg_match('/^\d{16}$/', $cardNumber)) {
-        $error = 'Please enter a valid 16-digit credit card number (numbers only).';
-    } else {
-        $pdo->beginTransaction();
-        try {
-            $rentalStmt = $pdo->prepare("INSERT INTO rentals (user_id, car_id, total_price, status) VALUES (:user_id, :car_id, :total_price, 'confirmed')");
-            $rentalStmt->execute([
-                'user_id'     => $_SESSION['user_id'],
-                'car_id'      => $car['id'],
-                'total_price' => $totalPrice
-            ]);
-
-            $carStmt = $pdo->prepare("UPDATE cars SET status = 'rented' WHERE id = :id");
-            $carStmt->execute(['id' => $car['id']]);
-
-            $pdo->commit();
-
-            header('Location: user_dashboard.php?booking=success');
-            exit();
-        } catch (Exception $e) {
-            $pdo->rollBack();
-            $error = 'Transaction failed: ' . htmlspecialchars($e->getMessage());
-        }
-    }
+// 2. Validate Duration Integer Bounds (Nonnegative & Non-zero check)
+if ($days === false || $days <= 0) {
+    log_audit_event($pdo, 'PAYMENT_REJECTED', $_SESSION['user_name'] ?? "User #{$user_id}", "Invalid day duration submitted: " . ($_POST['days'] ?? 'N/A'));
+    die("Error: Invalid rental duration submitted for billing computation. <a href='user_dashboard.php'>Return to Catalog</a>");
 }
 
-$csrf_token = function_exists('get_csrf_token') 
-    ? get_csrf_token() 
-    : ($_SESSION['csrf_token'] ?? ($_SESSION['csrf_token'] = bin2hex(random_bytes(32))));
+// 3. Enforce Upper Limit Cap
+$max_allowed_days = 30;
+if ($days > $max_allowed_days) {
+    log_audit_event($pdo, 'PAYMENT_REJECTED', $_SESSION['user_name'] ?? "User #{$user_id}", "Exceeded maximum rental window: {$days} days");
+    die("Error: Rental duration exceeds maximum limit of {$max_allowed_days} days. <a href='user_dashboard.php'>Return to Catalog</a>");
+}
+
+// -------------------------------------------------------------
+// AUTHORITATIVE RATE LOOKUP & BILLING CALCULATION
+// -------------------------------------------------------------
+try {
+    // Re-fetch price rate directly from DB to prevent client-side rate tampering
+    $stmt = $pdo->prepare("SELECT * FROM cars WHERE id = ? AND (LOWER(status) = 'available' OR status IS NULL)");
+    $stmt->execute([$car_id]);
+    $car = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$car) {
+        die("Selected vehicle is not available for payment processing. <a href='user_dashboard.php'>Return to Catalog</a>");
+    }
+
+    $daily_rate = (float)(
+        $car['price_per_day'] ?? 
+        $car['daily_rate'] ?? 
+        $car['price'] ?? 
+        50.00
+    );
+
+    // Calculate derived total price server-side
+    $total_price = $daily_rate * $days;
+
+    // Dates calculation for billing record
+    $start_date = date('Y-m-d');
+    $end_date   = date('Y-m-d', strtotime("+{$days} days"));
+
+    $pdo->beginTransaction();
+
+    // Persist payment transaction record
+    $insert = $pdo->prepare("
+        INSERT INTO rentals (user_id, car_id, start_date, end_date, total_price, status) 
+        VALUES (:user_id, :car_id, :start_date, :end_date, :total_price, 'confirmed')
+    ");
+
+    $insert->execute([
+        ':user_id'     => $user_id,
+        ':car_id'      => $car_id,
+        ':start_date'  => $start_date,
+        ':end_date'    => $end_date,
+        ':total_price' => $total_price
+    ]);
+
+    // Update vehicle operational status
+    $update_car = $pdo->prepare("UPDATE cars SET status = 'rented' WHERE id = ?");
+    $update_car->execute([$car_id]);
+
+    $pdo->commit();
+
+    log_audit_event($pdo, 'PAYMENT_SUCCESS', $_SESSION['user_name'] ?? "User #{$user_id}", "Processed payment for Car #{$car_id} across {$days} days - Total Billed: \${$total_price}");
+
+    header("Location: user_dashboard.php?payment=success");
+    exit();
+
+} catch (PDOException $e) {
+    if ($pdo->inTransaction()) { $pdo->rollBack(); }
+    log_audit_event($pdo, 'PAYMENT_FAILURE', $_SESSION['user_name'] ?? "User #{$user_id}", "Payment execution error: " . $e->getMessage());
+    die("Payment Processing Failed! Database Error: " . htmlspecialchars($e->getMessage()));
+}
 ?>
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Checkout & Payment - DriveEase</title>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-        body { background: #f4f6f9; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
-        .card { background: white; padding: 40px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); width: 100%; max-width: 450px; }
-        .summary-box { background: #f8f9fa; border: 1px solid #ddd; padding: 15px; border-radius: 4px; margin: 20px 0; }
-        .form-group { margin-bottom: 15px; }
-        label { display: block; margin-bottom: 5px; font-weight: bold; font-size: 14px; }
-        input[type="number"], input[type="text"] { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; outline: none; }
-        .btn { width: 100%; padding: 12px; background: #28a745; color: white; border: none; border-radius: 4px; font-size: 16px; cursor: pointer; font-weight: bold; margin-top: 10px; }
-        .btn:hover { background: #218838; }
-        .cancel-link { display: block; text-align: center; margin-top: 15px; color: #666; text-decoration: none; font-size: 14px; }
-        .error { background-color: #ffe6e6; color: #d9534f; padding: 10px; border-radius: 4px; font-size: 14px; margin-bottom: 16px; text-align: center; }
-        .hint { font-size: 12px; color: #666; margin-top: 4px; display: block; }
-    </style>
-</head>
-<body>
-
-<div class="card">
-    <h2>Vehicle Checkout</h2>
-
-    <div id="jsError" class="error" style="display: none;"></div>
-
-    <?php if ($error): ?>
-        <div class="error"><?= htmlspecialchars($error) ?></div>
-    <?php endif; ?>
-
-    <div class="summary-box">
-        <h3><?= htmlspecialchars(($car['brand'] ?? $car['make'] ?? 'Vehicle') . ' ' . ($car['model'] ?? '')) ?></h3>
-        <p style="margin-top: 5px;">Rate: <strong>$<?= number_format($daily_rate, 2) ?></strong> / day</p>
-    </div>
-
-    <form action="payment.php?car_id=<?= $car['id'] ?>" method="POST" id="paymentForm">
-        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
-
-        <div class="form-group">
-            <label for="days">Rental Duration (Days)</label>
-            <input type="number" id="days" name="days" min="1" max="30" value="1" required>
-        </div>
-
-        <div style="border-top: 1px solid #ccc; padding-top: 15px; margin-top: 15px;">
-            <h4>Payment Details</h4>
-            <div class="form-group" style="margin-top: 10px;">
-                <label for="card_number">Credit Card Number</label>
-                <input 
-                    type="text" 
-                    id="card_number" 
-                    name="card_number" 
-                    placeholder="4000123456789010" 
-                    maxlength="16"
-                    required
-                    autocomplete="off"
-                >
-                <span class="hint">Must contain exactly 16 numbers with no letters or special characters.</span>
-            </div>
-        </div>
-
-        <button type="submit" class="btn">Confirm Payment & Checkout</button>
-    </form>
-    <a href="user_dashboard.php" class="cancel-link">Cancel and return</a>
-</div>
-
-<script>
-const cardInput = document.getElementById('card_number');
-const paymentForm = document.getElementById('paymentForm');
-const jsError = document.getElementById('jsError');
-
-cardInput.addEventListener('input', function(e) {
-    this.value = this.value.replace(/\D/g, '').slice(0, 16);
-});
-
-paymentForm.addEventListener('submit', function(e) {
-    const cardValue = cardInput.value.trim();
-
-    if (!/^\d{16}$/.test(cardValue)) {
-        e.preventDefault();
-        jsError.textContent = 'Please enter a valid 16-digit credit card number.';
-        jsError.style.display = 'block';
-        cardInput.focus();
-    } else {
-        jsError.style.display = 'none';
-    }
-});
-</script>
-
-</body>
-</html>
