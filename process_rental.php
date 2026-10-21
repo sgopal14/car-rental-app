@@ -60,7 +60,7 @@ $interval = $d1->diff($d2);
 $days = $interval->days;
 
 if ($days === 0) {
-    $days = 1; // Same-day rental count as 1 day
+    $days = 1; // Same-day rental counts as 1 day
 }
 
 $max_allowed_days = 30;
@@ -70,11 +70,24 @@ if ($days > $max_allowed_days) {
 }
 
 // -------------------------------------------------------------
-// 2. TEMPORAL OVERLAP & AVAILABILITY VERIFICATION
+// 2. DYNAMIC COLUMN DETECTION & TEMPORAL OVERLAP VERIFICATION
 // -------------------------------------------------------------
 try {
-    // Check if vehicle is in maintenance
-    $maint_check = $pdo->prepare("SELECT status, price_per_day, daily_rate, price FROM cars WHERE id = ?");
+    // Dynamically inspect 'cars' table columns to detect rate column variant safely
+    $car_cols = $pdo->query("SHOW COLUMNS FROM cars")->fetchAll(PDO::FETCH_COLUMN);
+
+    if (in_array('price_per_day', $car_cols, true)) {
+        $price_expression = 'price_per_day';
+    } elseif (in_array('daily_rate', $car_cols, true)) {
+        $price_expression = 'daily_rate';
+    } elseif (in_array('price', $car_cols, true)) {
+        $price_expression = 'price';
+    } else {
+        $price_expression = '50.00'; // Default safety fallback
+    }
+
+    // Fetch vehicle details using detected price expression
+    $maint_check = $pdo->prepare("SELECT status, {$price_expression} AS calculated_rate FROM cars WHERE id = ?");
     $maint_check->execute([$car_id]);
     $car = $maint_check->fetch(PDO::FETCH_ASSOC);
 
@@ -101,13 +114,7 @@ try {
         die("Error: This vehicle is already reserved for all or part of your selected dates. Please select a different date range or vehicle. <a href='user_dashboard.php'>Return to Catalog</a>");
     }
 
-    $daily_rate = (float)(
-        $car['price_per_day'] ?? 
-        $car['daily_rate'] ?? 
-        $car['price'] ?? 
-        50.00
-    );
-
+    $daily_rate = (float)($car['calculated_rate'] ?? 50.00);
     $total_price = $daily_rate * $days;
     $is_starting_today = ($d1->format('Y-m-d') === $today->format('Y-m-d'));
 
@@ -143,7 +150,9 @@ try {
     exit();
 
 } catch (PDOException $e) {
-    if ($pdo->inTransaction()) { $pdo->rollBack(); }
+    if ($pdo->inTransaction()) { 
+        $pdo->rollBack(); 
+    }
     log_audit_event($pdo, 'RENTAL_ERROR', $_SESSION['user_name'] ?? "User #{$user_id}", "Database transaction failed: " . $e->getMessage());
     die("Reservation Failed! Database Error: " . htmlspecialchars($e->getMessage()));
 }
