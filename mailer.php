@@ -22,7 +22,7 @@ function sendOTPCode($toEmail, $otp) {
         $mail->SMTPAuth   = true;
         $mail->Port       = 2525;
         $mail->Username   = 'f20eb5f67cad5e';
-        $mail->Password   = '0813a35170c8f2';
+    
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port       = 587;
 
