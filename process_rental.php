@@ -28,10 +28,10 @@ if (!$car_id || empty($start_date_raw) || empty($end_date_raw)) {
 }
 
 // -------------------------------------------------------------
-// SERVER-SIDE DATE & BUSINESS LOGIC VALIDATION
+// 1. SERVER-SIDE DATE & BUSINESS LOGIC VALIDATION
 // -------------------------------------------------------------
 
-// 1. Syntax & Strict Date Format Validation
+// Syntax & Strict Date Format Validation
 $d1 = DateTime::createFromFormat('Y-m-d', $start_date_raw);
 $d2 = DateTime::createFromFormat('Y-m-d', $end_date_raw);
 
@@ -43,19 +43,19 @@ if (!$d1 || !$d2 || $d1->format('Y-m-d') !== $start_date_raw || $d2->format('Y-m
 // Strip time component for accurate date comparison
 $today = new DateTime('today');
 
-// 2. Timeline Boundary Check (Start date cannot be in the past)
+// Timeline Boundary Check (Start date cannot be in the past)
 if ($d1 < $today) {
     log_audit_event($pdo, 'RENTAL_REJECTED', $_SESSION['user_name'] ?? "User #{$user_id}", "Attempted past start date: {$start_date_raw}");
     die("Error: Start date cannot be in the past. <a href='user_dashboard.php'>Return to Catalog</a>");
 }
 
-// 3. Chronological Ordering Check (End date must be >= Start date)
+// Chronological Ordering Check (End date must be >= Start date)
 if ($d2 < $d1) {
     log_audit_event($pdo, 'RENTAL_REJECTED', $_SESSION['user_name'] ?? "User #{$user_id}", "Reversed date range submitted: {$start_date_raw} to {$end_date_raw}");
     die("Error: End date must be on or after the start date. <a href='user_dashboard.php'>Return to Catalog</a>");
 }
 
-// 4. Calculate Duration & Enforce Booking Window Cap
+// Calculate Duration & Enforce Booking Window Cap
 $interval = $d1->diff($d2);
 $days = $interval->days;
 
@@ -70,16 +70,35 @@ if ($days > $max_allowed_days) {
 }
 
 // -------------------------------------------------------------
-// DATABASE TRANSACTION & PERSISTENCE
+// 2. TEMPORAL OVERLAP & AVAILABILITY VERIFICATION
 // -------------------------------------------------------------
 try {
-    // Verify car availability and retrieve authoritative price rate from DB
-    $stmt = $pdo->prepare("SELECT * FROM cars WHERE id = :id AND (LOWER(status) = 'available' OR status IS NULL)");
-    $stmt->execute([':id' => $car_id]);
-    $car = $stmt->fetch(PDO::FETCH_ASSOC);
+    // Check if vehicle is in maintenance
+    $maint_check = $pdo->prepare("SELECT status, price_per_day, daily_rate, price FROM cars WHERE id = ?");
+    $maint_check->execute([$car_id]);
+    $car = $maint_check->fetch(PDO::FETCH_ASSOC);
 
-    if (!$car) {
-        die("Selected vehicle is not currently available. <a href='user_dashboard.php'>Return to Catalog</a>");
+    if (!$car || strtolower($car['status'] ?? '') === 'maintenance') {
+        die("Error: Selected vehicle is currently out of service or in maintenance. <a href='user_dashboard.php'>Return to Catalog</a>");
+    }
+
+    // Check if the car is already reserved during ANY portion of the requested window
+    $overlap_stmt = $pdo->prepare("
+        SELECT COUNT(*) FROM rentals 
+        WHERE car_id = :car_id 
+          AND status IN ('confirmed', 'active')
+          AND NOT (end_date < :start_date OR start_date > :end_date)
+    ");
+
+    $overlap_stmt->execute([
+        ':car_id'     => $car_id,
+        ':start_date' => $start_date_raw,
+        ':end_date'   => $end_date_raw
+    ]);
+
+    if ($overlap_stmt->fetchColumn() > 0) {
+        log_audit_event($pdo, 'RENTAL_REJECTED', $_SESSION['user_name'] ?? "User #{$user_id}", "Overlapping reservation attempt for car #{$car_id} ({$start_date_raw} to {$end_date_raw})");
+        die("Error: This vehicle is already reserved for all or part of your selected dates. Please select a different date range or vehicle. <a href='user_dashboard.php'>Return to Catalog</a>");
     }
 
     $daily_rate = (float)(
@@ -89,9 +108,12 @@ try {
         50.00
     );
 
-    // Compute total price server-side
     $total_price = $daily_rate * $days;
+    $is_starting_today = ($d1->format('Y-m-d') === $today->format('Y-m-d'));
 
+    // -------------------------------------------------------------
+    // 3. TRANSACTION PERSISTENCE
+    // -------------------------------------------------------------
     $pdo->beginTransaction();
 
     $insert = $pdo->prepare("
@@ -107,9 +129,11 @@ try {
         ':total_price' => $total_price
     ]);
 
-    // Update car status to rented
-    $update_car = $pdo->prepare("UPDATE cars SET status = 'rented' WHERE id = ?");
-    $update_car->execute([$car_id]);
+    // ONLY update car status to 'rented' if the rental starts TODAY
+    if ($is_starting_today) {
+        $update_car = $pdo->prepare("UPDATE cars SET status = 'rented' WHERE id = ?");
+        $update_car->execute([$car_id]);
+    }
 
     $pdo->commit();
 
