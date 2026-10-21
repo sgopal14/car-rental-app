@@ -3,10 +3,12 @@ ob_start();
 session_start();
 require_once 'db.php';
 
+// Verify CSRF Token on POST Requests
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && function_exists('verify_csrf_token')) {
     verify_csrf_token();
 }
 
+// Global Gatekeeper Check: Allow staff/admin roles into dashboard
 $allowed_admin_roles = ['admin', 'agent', 'fleet_manager'];
 $current_role = strtolower($_SESSION['role'] ?? $_SESSION['user_role'] ?? 'customer');
 
@@ -18,6 +20,7 @@ if (!isset($_SESSION['user_id']) || !in_array($current_role, $allowed_admin_role
 $message = '';
 $error = '';
 
+// Helper to check table existence
 function table_exists($pdo, $table_name) {
     try {
         $result = $pdo->query("SHOW TABLES LIKE " . $pdo->quote($table_name));
@@ -31,82 +34,106 @@ $rental_table = table_exists($pdo, 'rentals') ? 'rentals' : 'bookings';
 $has_logs_table = table_exists($pdo, 'audit_logs') || table_exists($pdo, 'logs');
 $log_table = table_exists($pdo, 'audit_logs') ? 'audit_logs' : 'logs';
 
+// Handle Action Processing
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     $action = $_POST['action'];
 
+    // 1. USER MANAGEMENT: UPDATE ROLE
     if ($action === 'update_role') {
-        $target_user_id = intval($_POST['user_id'] ?? 0);
-        $new_role = strtolower(trim($_POST['role'] ?? 'customer'));
-        $valid_roles = ['customer', 'agent', 'fleet_manager', 'admin'];
+        // AIKIDO SAST SECURITY FIX: Strict local privilege check to prevent vertical escalation
+        if ($current_role !== 'admin') {
+            log_audit_event($pdo, 'UNAUTHORIZED_ROLE_ESCALATION_ATTEMPT', $_SESSION['user_name'] ?? 'User #'.$_SESSION['user_id'], "Attempted role modification without Admin privileges");
+            $error = "Access Denied: Only full Administrators can modify user privileges.";
+        } else {
+            $target_user_id = intval($_POST['user_id'] ?? 0);
+            $new_role = strtolower(trim($_POST['role'] ?? 'customer'));
+            $valid_roles = ['customer', 'agent', 'fleet_manager', 'admin'];
 
-        if ($new_role === 'user') { $new_role = 'customer'; }
-        if (in_array($new_role, ['branch_agent', 'staff'], true)) { $new_role = 'agent'; }
+            if ($new_role === 'user') { $new_role = 'customer'; }
+            if (in_array($new_role, ['branch_agent', 'staff'], true)) { $new_role = 'agent'; }
 
-        if ($target_user_id > 0 && in_array($new_role, $valid_roles, true)) {
-            try {
-                $stmt = $pdo->prepare("UPDATE users SET role = :role WHERE id = :id");
-                $stmt->execute([
-                    ':role' => $new_role,
-                    ':id'   => $target_user_id
-                ]);
+            if ($target_user_id > 0 && in_array($new_role, $valid_roles, true)) {
+                try {
+                    $stmt = $pdo->prepare("UPDATE users SET role = :role WHERE id = :id");
+                    $stmt->execute([
+                        ':role' => $new_role,
+                        ':id'   => $target_user_id
+                    ]);
 
-                if ($target_user_id === $_SESSION['user_id']) {
-                    $_SESSION['role']      = $new_role;
-                    $_SESSION['user_role'] = $new_role;
+                    if ($target_user_id === $_SESSION['user_id']) {
+                        $_SESSION['role']      = $new_role;
+                        $_SESSION['user_role'] = $new_role;
+                    }
+
+                    log_audit_event($pdo, 'ROLE_UPDATED', $_SESSION['user_name'] ?? 'Admin', "Updated user #{$target_user_id} role to {$new_role}");
+
+                    $message = "User #" . $target_user_id . " role successfully updated to '" . strtoupper($new_role) . "'.";
+                } catch (PDOException $e) {
+                    $error = "Failed to update user role: " . $e->getMessage();
                 }
-
-                log_audit_event($pdo, 'ROLE_UPDATED', $_SESSION['user_name'] ?? 'Admin', "Updated user #{$target_user_id} role to {$new_role}");
-
-                $message = "User #" . $target_user_id . " role successfully updated to '" . strtoupper($new_role) . "'.";
-            } catch (PDOException $e) {
-                $error = "Failed to update user role: " . $e->getMessage();
+            } else {
+                $error = "Invalid user ID or unrecognized role type selected.";
             }
-        } else {
-            $error = "Invalid user ID or unrecognized role type selected.";
         }
     }
+
+    // 2. USER MANAGEMENT: DELETE USER
     elseif ($action === 'delete_user') {
-        $target_user_id = intval($_POST['user_id'] ?? 0);
-        if ($target_user_id === $_SESSION['user_id']) {
-            $error = "You cannot delete your own active administrator account.";
+        // AIKIDO SAST SECURITY FIX: Strict local privilege check for account deletion
+        if ($current_role !== 'admin') {
+            log_audit_event($pdo, 'UNAUTHORIZED_DELETE_ATTEMPT', $_SESSION['user_name'] ?? 'User #'.$_SESSION['user_id'], "Attempted user deletion without Admin privileges");
+            $error = "Access Denied: Only full Administrators can delete user accounts.";
         } else {
-            try {
-                $stmt = $pdo->prepare("DELETE FROM users WHERE id = ?");
-                $stmt->execute([$target_user_id]);
+            $target_user_id = intval($_POST['user_id'] ?? 0);
+            if ($target_user_id === $_SESSION['user_id']) {
+                $error = "You cannot delete your own active administrator account.";
+            } else {
+                try {
+                    $stmt = $pdo->prepare("DELETE FROM users WHERE id = ?");
+                    $stmt->execute([$target_user_id]);
 
-                log_audit_event($pdo, 'USER_DELETED', $_SESSION['user_name'] ?? 'Admin', "Deleted user account #{$target_user_id}");
+                    log_audit_event($pdo, 'USER_DELETED', $_SESSION['user_name'] ?? 'Admin', "Deleted user account #{$target_user_id}");
 
-                $message = "User deleted successfully.";
-            } catch (PDOException $e) {
-                $error = "Failed to delete user: " . $e->getMessage();
+                    $message = "User deleted successfully.";
+                } catch (PDOException $e) {
+                    $error = "Failed to delete user: " . $e->getMessage();
+                }
             }
         }
     }
+
+    // 3. FLEET MANAGEMENT: ADD VEHICLE
     elseif ($action === 'add_vehicle') {
-        $make = trim($_POST['brand'] ?? $_POST['make'] ?? '');
-        $model = trim($_POST['model'] ?? '');
-        $category = trim($_POST['category'] ?? 'Standard');
-        $price = floatval($_POST['price_per_day'] ?? $_POST['daily_rate'] ?? 0);
-
-        if (!empty($make) && !empty($model) && $price > 0) {
-            try {
-                $cols = $pdo->query("SHOW COLUMNS FROM cars")->fetchAll(PDO::FETCH_COLUMN);
-                $make_col = in_array('brand', $cols, true) ? 'brand' : 'make';
-                $price_col = in_array('price_per_day', $cols, true) ? 'price_per_day' : 'daily_rate';
-
-                $stmt = $pdo->prepare("INSERT INTO cars ({$make_col}, model, category, {$price_col}, status) VALUES (?, ?, ?, ?, 'available')");
-                $stmt->execute([$make, $model, $category, $price]);
-
-                log_audit_event($pdo, 'VEHICLE_ADDED', $_SESSION['user_name'] ?? 'Admin', "Added vehicle asset {$make} {$model}");
-
-                $message = "Vehicle asset '{$make} {$model}' added to fleet successfully.";
-            } catch (PDOException $e) {
-                $error = "Failed to add vehicle: " . $e->getMessage();
-            }
+        if (!in_array($current_role, ['admin', 'fleet_manager'], true)) {
+            $error = "Access Denied: Insufficient permissions to add vehicle assets.";
         } else {
-            $error = "Please fill in all vehicle details correctly.";
+            $make = trim($_POST['brand'] ?? $_POST['make'] ?? '');
+            $model = trim($_POST['model'] ?? '');
+            $category = trim($_POST['category'] ?? 'Standard');
+            $price = floatval($_POST['price_per_day'] ?? $_POST['daily_rate'] ?? 0);
+
+            if (!empty($make) && !empty($model) && $price > 0) {
+                try {
+                    $cols = $pdo->query("SHOW COLUMNS FROM cars")->fetchAll(PDO::FETCH_COLUMN);
+                    $make_col = in_array('brand', $cols, true) ? 'brand' : 'make';
+                    $price_col = in_array('price_per_day', $cols, true) ? 'price_per_day' : 'daily_rate';
+
+                    $stmt = $pdo->prepare("INSERT INTO cars ({$make_col}, model, category, {$price_col}, status) VALUES (?, ?, ?, ?, 'available')");
+                    $stmt->execute([$make, $model, $category, $price]);
+
+                    log_audit_event($pdo, 'VEHICLE_ADDED', $_SESSION['user_name'] ?? 'Staff', "Added vehicle asset {$make} {$model}");
+
+                    $message = "Vehicle asset '{$make} {$model}' added to fleet successfully.";
+                } catch (PDOException $e) {
+                    $error = "Failed to add vehicle: " . $e->getMessage();
+                }
+            } else {
+                $error = "Please fill in all vehicle details correctly.";
+            }
         }
     }
+
+    // 4. FLEET MANAGEMENT: UPDATE CAR STATUS
     elseif ($action === 'update_car_status') {
         $car_id = intval($_POST['car_id'] ?? 0);
         $status = $_POST['status'] ?? 'available';
@@ -120,18 +147,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             }
         }
     }
+
+    // 5. FLEET MANAGEMENT: DELETE VEHICLE
     elseif ($action === 'delete_vehicle') {
-        $car_id = intval($_POST['car_id'] ?? 0);
-        if ($car_id > 0) {
-            try {
-                $stmt = $pdo->prepare("DELETE FROM cars WHERE id = ?");
-                $stmt->execute([$car_id]);
-                $message = "Vehicle #{$car_id} removed from fleet.";
-            } catch (PDOException $e) {
-                $error = "Cannot delete vehicle associated with active bookings: " . $e->getMessage();
+        if (!in_array($current_role, ['admin', 'fleet_manager'], true)) {
+            $error = "Access Denied: Insufficient permissions to delete vehicle assets.";
+        } else {
+            $car_id = intval($_POST['car_id'] ?? 0);
+            if ($car_id > 0) {
+                try {
+                    $stmt = $pdo->prepare("DELETE FROM cars WHERE id = ?");
+                    $stmt->execute([$car_id]);
+                    $message = "Vehicle #{$car_id} removed from fleet.";
+                } catch (PDOException $e) {
+                    $error = "Cannot delete vehicle associated with active bookings: " . $e->getMessage();
+                }
             }
         }
     }
+
+    // 6. RENTAL DESK: PROCESS BOOKING STATUS
     elseif ($action === 'process_booking_status') {
         $booking_id = intval($_POST['booking_id'] ?? 0);
         $car_id = intval($_POST['car_id'] ?? 0);
@@ -160,6 +195,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     }
 }
 
+// Fetch Metrics and Dashboard Records
 $total_users = 0; $total_cars = 0; $available_cars = 0; $maintenance_cars = 0; $total_revenue = 0.00;
 $users = []; $cars = []; $transactions = []; $audit_logs = [];
 
@@ -195,7 +231,7 @@ $csrf_token = get_csrf_token();
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DriveEase - Executive Master Control Panel</title>
+    <title>DriveEase - Master Operational Control</title>
     <style>
         * { box-sizing: border-box; }
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; margin: 0; padding: 0; color: #333; }
@@ -254,7 +290,7 @@ $csrf_token = get_csrf_token();
 <body>
 
 <div class="header">
-    <h1>DriveEase Master Control</h1>
+    <h1>DriveEase Operations Control Desk</h1>
     <div class="user-info">
         <span>Logged in as: <strong><?php echo htmlspecialchars($_SESSION['user_name'] ?? 'Administrator'); ?></strong> (<?php echo htmlspecialchars(strtoupper($current_role)); ?>)</span>
         <a href="logout.php" class="btn-logout">Logout</a>
@@ -311,6 +347,11 @@ $csrf_token = get_csrf_token();
             <div class="card-header">
                 <h2>User Management & Privilege Control</h2>
             </div>
+            <?php if ($current_role !== 'admin'): ?>
+                <p style="color:#856404; background:#fff3cd; padding:10px; border-radius:4px; font-size:13px;">
+                    <strong>Notice:</strong> Your current session role (<?php echo strtoupper($current_role); ?>) is restricted to read-only views for user accounts. Only full Administrators can modify user roles or delete accounts.
+                </p>
+            <?php endif; ?>
             <table>
                 <thead>
                     <tr>
@@ -340,29 +381,37 @@ $csrf_token = get_csrf_token();
                                 </span>
                             </td>
                             <td>
-                                <form method="POST" style="display: flex; gap: 5px;">
-                                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
-                                    <input type="hidden" name="action" value="update_role">
-                                    <input type="hidden" name="user_id" value="<?php echo $u['id']; ?>">
-                                    <select name="role">
-                                        <option value="customer" <?php if ($raw_role === 'customer') echo 'selected'; ?>>Customer</option>
-                                        <option value="agent" <?php if ($raw_role === 'agent') echo 'selected'; ?>>Agent</option>
-                                        <option value="fleet_manager" <?php if ($raw_role === 'fleet_manager') echo 'selected'; ?>>Fleet Manager</option>
-                                        <option value="admin" <?php if ($raw_role === 'admin') echo 'selected'; ?>>Admin</option>
-                                    </select>
-                                    <button type="submit" class="btn-action btn-update">Update</button>
-                                </form>
-                            </td>
-                            <td>
-                                <?php if ($u['id'] !== $_SESSION['user_id']): ?>
-                                    <form method="POST" onsubmit="return confirm('Delete this user account?');" style="display:inline;">
+                                <?php if ($current_role === 'admin'): ?>
+                                    <form method="POST" style="display: flex; gap: 5px;">
                                         <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
-                                        <input type="hidden" name="action" value="delete_user">
+                                        <input type="hidden" name="action" value="update_role">
                                         <input type="hidden" name="user_id" value="<?php echo $u['id']; ?>">
-                                        <button type="submit" class="btn-action btn-delete">Delete</button>
+                                        <select name="role">
+                                            <option value="customer" <?php if ($raw_role === 'customer') echo 'selected'; ?>>Customer</option>
+                                            <option value="agent" <?php if ($raw_role === 'agent') echo 'selected'; ?>>Agent</option>
+                                            <option value="fleet_manager" <?php if ($raw_role === 'fleet_manager') echo 'selected'; ?>>Fleet Manager</option>
+                                            <option value="admin" <?php if ($raw_role === 'admin') echo 'selected'; ?>>Admin</option>
+                                        </select>
+                                        <button type="submit" class="btn-action btn-update">Update</button>
                                     </form>
                                 <?php else: ?>
-                                    <em style="color:#6c757d;">(Active Session)</em>
+                                    <em style="color:#6c757d;">Read-Only</em>
+                                <?php endif; ?>
+                            </td>
+                            <td>
+                                <?php if ($current_role === 'admin'): ?>
+                                    <?php if ($u['id'] !== $_SESSION['user_id']): ?>
+                                        <form method="POST" onsubmit="return confirm('Delete this user account?');" style="display:inline;">
+                                            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
+                                            <input type="hidden" name="action" value="delete_user">
+                                            <input type="hidden" name="user_id" value="<?php echo $u['id']; ?>">
+                                            <button type="submit" class="btn-action btn-delete">Delete</button>
+                                        </form>
+                                    <?php else: ?>
+                                        <em style="color:#6c757d;">(Active Session)</em>
+                                    <?php endif; ?>
+                                <?php else: ?>
+                                    <em style="color:#6c757d;">Disabled</em>
                                 <?php endif; ?>
                             </td>
                         </tr>
@@ -379,34 +428,36 @@ $csrf_token = get_csrf_token();
                 <h2>Fleet Asset Management</h2>
             </div>
 
-            <form method="POST" style="margin-bottom: 20px;">
-                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
-                <input type="hidden" name="action" value="add_vehicle">
-                <div class="form-grid">
-                    <div class="form-group">
-                        <label>Brand / Make</label>
-                        <input type="text" name="brand" placeholder="e.g., Toyota" required>
+            <?php if (in_array($current_role, ['admin', 'fleet_manager'], true)): ?>
+                <form method="POST" style="margin-bottom: 20px;">
+                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
+                    <input type="hidden" name="action" value="add_vehicle">
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label>Brand / Make</label>
+                            <input type="text" name="brand" placeholder="e.g., Toyota" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Model</label>
+                            <input type="text" name="model" placeholder="e.g., RAV4" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Category</label>
+                            <select name="category">
+                                <option value="SUV">SUV</option>
+                                <option value="Sedan">Sedan</option>
+                                <option value="Luxury">Luxury</option>
+                                <option value="Economy">Economy</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Daily Rate ($)</label>
+                            <input type="number" step="0.01" name="price_per_day" placeholder="65.00" required>
+                        </div>
                     </div>
-                    <div class="form-group">
-                        <label>Model</label>
-                        <input type="text" name="model" placeholder="e.g., RAV4" required>
-                    </div>
-                    <div class="form-group">
-                        <label>Category</label>
-                        <select name="category">
-                            <option value="SUV">SUV</option>
-                            <option value="Sedan">Sedan</option>
-                            <option value="Luxury">Luxury</option>
-                            <option value="Economy">Economy</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Daily Rate ($)</label>
-                        <input type="number" step="0.01" name="price_per_day" placeholder="65.00" required>
-                    </div>
-                </div>
-                <button type="submit" class="btn-submit">+ Add Vehicle Asset</button>
-            </form>
+                    <button type="submit" class="btn-submit">+ Add Vehicle Asset</button>
+                </form>
+            <?php endif; ?>
 
             <table>
                 <thead>
@@ -451,12 +502,16 @@ $csrf_token = get_csrf_token();
                                 </form>
                             </td>
                             <td>
-                                <form method="POST" onsubmit="return confirm('Remove vehicle asset from fleet?');" style="display:inline;">
-                                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
-                                    <input type="hidden" name="action" value="delete_vehicle">
-                                    <input type="hidden" name="car_id" value="<?php echo $car['id']; ?>">
-                                    <button type="submit" class="btn-action btn-delete">Delete</button>
-                                </form>
+                                <?php if (in_array($current_role, ['admin', 'fleet_manager'], true)): ?>
+                                    <form method="POST" onsubmit="return confirm('Remove vehicle asset from fleet?');" style="display:inline;">
+                                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
+                                        <input type="hidden" name="action" value="delete_vehicle">
+                                        <input type="hidden" name="car_id" value="<?php echo $car['id']; ?>">
+                                        <button type="submit" class="btn-action btn-delete">Delete</button>
+                                    </form>
+                                <?php else: ?>
+                                    <em style="color:#6c757d;">Read-Only</em>
+                                <?php endif; ?>
                             </td>
                         </tr>
                     <?php endforeach; ?>
